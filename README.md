@@ -46,7 +46,7 @@ docker compose -f docker-compose.vps.yml up -d
 ```bash
 docker run -d \
   --name kiro-go \
-  -p 8080:8080 \
+  -p 8089:8089 \
   -e ADMIN_PASSWORD=your_secure_password \
   -v /path/to/data:/app/data \
   --restart unless-stopped \
@@ -71,7 +71,7 @@ The repo already includes a `Dockerfile`, so it builds and runs on Zeabur out of
 1. Fork this repo to your GitHub account.
 2. In Zeabur, create a new service and choose **Deploy from GitHub**, then select your fork.
 3. Zeabur auto-detects the `Dockerfile` and builds the image.
-4. In the **Networking** tab, expose port `8080` and bind a domain.
+4. In the **Networking** tab, expose port `8089` and bind a domain.
 5. In the **Variables** tab, set at least `ADMIN_PASSWORD` (admin panel password).
 6. Mount a Volume at `/app/data` if you want accounts / config to survive redeploys.
 
@@ -91,17 +91,17 @@ Config is auto-created at `data/config.json`. Mount `/app/data` for persistence.
 
 ## Usage
 
-Open `http://localhost:8080/admin`, log in, add accounts, then call the API:
+Open `http://localhost:8089/admin`, log in, add accounts, then call the API:
 
 ```bash
 # Claude
-curl http://localhost:8080/v1/messages \
+curl http://localhost:8089/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
   -d '{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
 
 # OpenAI
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8089/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}'

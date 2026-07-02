@@ -30,7 +30,7 @@ services:
       # Must match the path proxied in your Caddyfile.
       KIRO_SSO_CALLBACK_URL: "https://kiro-go.monet.uno/sso-callback"
     ports:
-      - "127.0.0.1:8090:8080"
+      - "127.0.0.1:8090:8089"
       # Internal-only; Caddy forwards /sso-callback to here
       - "127.0.0.1:3128:3128"
     volumes:

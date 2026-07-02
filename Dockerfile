@@ -22,7 +22,7 @@ COPY --from=builder /app/kiro-go .
 COPY --from=builder /app/web ./web
 RUN mkdir -p /app/data
 
-EXPOSE 8080
+EXPOSE 8089
 # Enterprise SSO (Microsoft 365) loopback callback port — see docker-compose.yml.
 EXPOSE 3128
 VOLUME /app/data

@@ -151,7 +151,7 @@ type RoutingConcurrencyConfig struct {
 type Config struct {
 	// Server settings
 	Password      string        `json:"password"`          // Admin panel password
-	Port          int           `json:"port"`              // HTTP server port (default: 8080)
+	Port          int           `json:"port"`              // HTTP server port (default: 8089)
 	Host          string        `json:"host"`              // HTTP server bind address (default: 0.0.0.0)
 	ApiKey        string        `json:"apiKey,omitempty"`  // [Deprecated] Legacy single API key, migrated into ApiKeys on first load
 	RequireApiKey bool          `json:"requireApiKey"`     // [Deprecated] Whether to enforce API key validation; with multi-key support, len(ApiKeys)>0 implicitly enforces auth

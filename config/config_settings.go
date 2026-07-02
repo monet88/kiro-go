@@ -20,7 +20,7 @@ func GetPort() int {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
 	if cfg.Port == 0 {
-		return 8080
+		return 8089
 	}
 	return cfg.Port
 }

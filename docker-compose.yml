@@ -4,7 +4,7 @@ services:
   kiro-go:
     build: .
     ports:
-      - "8080:8080"
+      - "8089:8089"
       # Enterprise SSO (Microsoft 365) callback. The hosted-portal sign-in
       # redirects the browser to localhost:3128, so the operator must run that
       # browser ON THE DOCKER HOST. Publishing host-side to 127.0.0.1 only keeps
