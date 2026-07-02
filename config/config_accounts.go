@@ -1,9 +1,6 @@
 package config
 
-import (
-	"fmt"
-	"time"
-)
+import "time"
 
 func AutoQuarantineSuspicious429Reason() string {
 	return autoQuarantineSuspicious429Reason
@@ -66,17 +63,6 @@ func GetEnabledAccounts() []Account {
 func AddAccount(account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
-	// Reject a duplicate id under the write lock. The import path pre-checks with
-	// AccountIDExists (RLock) and mints a fresh id on collision, but that check and this
-	// append are not atomic; two concurrent imports of the same pasted id could both
-	// pass the pre-check. This makes "add if id absent" the atomic invariant.
-	if account.ID != "" {
-		for _, a := range cfg.Accounts {
-			if a.ID == account.ID {
-				return fmt.Errorf("account with id %s already exists", account.ID)
-			}
-		}
-	}
 	cfg.Accounts = append(cfg.Accounts, account)
 	return Save()
 }

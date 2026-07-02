@@ -395,11 +395,6 @@ func (h *Handler) apiImportSsoToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
-	// Cap the body: accessToken becomes attacker-influenced input that is base64- and
-	// JSON-decoded twice (issuerFromAccessTokenJWT / ExpFromAccessTokenJWT). Without a
-	// limit an oversized token is a memory-amplification DoS. Mirrors the io.LimitReader
-	// guard on outbound IdP responses in auth/kiro_sso.go's oidcDiscover.
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		AccessToken  string `json:"accessToken"`
 		RefreshToken string `json:"refreshToken"`
