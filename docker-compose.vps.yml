@@ -1,0 +1,38 @@
+# Docker Compose for deploying Kiro-Go on a SHARED VPS (Caddy on 80/443).
+#
+# Enterprise SSO (Microsoft 365) direct web login is supported:
+# - Set KIRO_SSO_CALLBACK_URL=https://your-domain/sso-callback
+# - Add matching reverse_proxy rule in Caddyfile for /sso-callback*
+# - Publish 3128 internally + KIRO_SSO_CALLBACK_BIND=0.0.0.0
+#
+# See docs in the code (auth/kiro_sso.go) and the VPS Caddyfile for setup.
+#
+# Usage on the VPS:
+#   cp .env.vps.example .env        # optional: override ADMIN_PASSWORD etc.
+#   docker compose -f docker-compose.vps.yml up -d
+#
+# Then add a vhost to the host Caddyfile (/etc/caddy/Caddyfile):
+#   kiro-go.monet.uno {
+#       reverse_proxy localhost:8090
+#   }
+# and reload with: sudo systemctl reload caddy
+services:
+  kiro-go:
+    image: ${KIRO_GO_IMAGE:-kiro-go:vps-good}
+    pull_policy: ${KIRO_GO_PULL_POLICY:-missing}
+    container_name: kiro-go
+    environment:
+      CONFIG_PATH: /app/data/config.json
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Tonight123@}
+      # Enable binding so Caddy-proxied callbacks from the public domain reach the container
+      KIRO_SSO_CALLBACK_BIND: "0.0.0.0"
+      # Public callback base for direct web Enterprise SSO (Microsoft 365) login.
+      # Must match the path proxied in your Caddyfile.
+      KIRO_SSO_CALLBACK_URL: "https://kiro-go.monet.uno/sso-callback"
+    ports:
+      - "127.0.0.1:8090:8080"
+      # Internal-only; Caddy forwards /sso-callback to here
+      - "127.0.0.1:3128:3128"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
