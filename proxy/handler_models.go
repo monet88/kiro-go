@@ -64,6 +64,8 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 
 func fallbackAnthropicModels(thinkingSuffix string) []map[string]interface{} {
 	return []map[string]interface{}{
+		buildModelInfo("claude-sonnet-5", "anthropic", true),
+		buildModelInfo("claude-sonnet-5"+thinkingSuffix, "anthropic", true),
 		buildModelInfo("claude-sonnet-4.6", "anthropic", true),
 		buildModelInfo("claude-sonnet-4.6"+thinkingSuffix, "anthropic", true),
 		buildModelInfo("claude-opus-4.8", "anthropic", true),

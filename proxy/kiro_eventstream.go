@@ -196,15 +196,19 @@ func getContextWindowSize(model string) int {
 	return 200_000
 }
 
-// claudeVersionExtractor matches "claude-<family>-<major>.<minor>" (dot or dash
+// claudeVersionExtractor matches "claude-<family>-<major>.<minor>" or "claude-<family>-<major>" (dot or dash
 // form) and is used to classify 1M-window models by version.
-var claudeVersionExtractor = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-(\d+)[.-](\d+)`)
+var claudeVersionExtractor = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-(\d+)(?:[.-](\d+))?`)
 
 func isLargeContextModel(model string) bool {
 	m := strings.ToLower(model)
 	if match := claudeVersionExtractor.FindStringSubmatch(m); match != nil {
 		major, errMaj := strconv.Atoi(match[1])
-		minor, errMin := strconv.Atoi(match[2])
+		minor := 0
+		var errMin error
+		if match[2] != "" {
+			minor, errMin = strconv.Atoi(match[2])
+		}
 		if errMaj == nil && errMin == nil {
 			// 1M window for Claude >= 4.6 (4.6, 4.7, 4.8, ...) and any major >= 5.
 			if major > 4 {

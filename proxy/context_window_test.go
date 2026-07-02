@@ -11,6 +11,8 @@ func TestGetContextWindowSize(t *testing.T) {
 		model string
 		want  int
 	}{
+		{"claude-sonnet-5", 1_000_000},
+		{"claude-sonnet-5-thinking", 1_000_000},
 		{"claude-opus-4.8", 1_000_000},
 		{"claude-opus-4-8", 1_000_000},
 		{"claude-opus-4.7", 1_000_000},
