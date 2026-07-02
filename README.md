@@ -6,28 +6,39 @@
 
 Convert Kiro accounts to OpenAI / Anthropic compatible API service.
 
-[English](README.md) | [中文](README_CN.md)
-
 If this project helps you, a Star would mean a lot.
 
 ## Features
 
-- Anthropic `/v1/messages` & OpenAI `/v1/chat/completions`
-- Multi-account pool with round-robin load balancing
-- Auto token refresh, SSE streaming, Web admin panel
-- Multiple auth: AWS Builder ID, IAM Identity Center (Enterprise SSO), SSO Token, local cache, credentials JSON
-- Usage tracking, account import/export, i18n (CN / EN)
-- Support configuring outbound proxy (SOCKS5 / HTTP)
+- **Standard Protocol Parity**: Full Anthropic `/v1/messages` & OpenAI `/v1/chat/completions` compatibility.
+- **Advanced Load Balancing**: Multi-account pool with intelligent round-robin balancing and automatic 429 cooldowns / retry routing.
+- **Enterprise SSO & Custom Auth**: Supports AWS Builder ID, AWS IAM Identity Center, Microsoft 365 (Entra ID / Azure AD) SSO with local callback validation, SSO Token, credentials JSON, and local cache.
+- **Real-Time Diagnostics**: Live concurrency monitoring panel, usage counters, and time-to-first-token (TTFT) tracking.
+- **Security Hardened**: Inbound 1MiB request body cap to prevent memory DoS, duplicate account ID validation under locks, and outbound exfiltration boundary allow-list validations.
+- **Administration & Ops**: Fully-featured Web Admin Panel with client-side account pagination, settings control (Thinking Mode, Outbound SOCKS5/HTTP Proxy), and import/export capabilities.
 
 ## Quick Start
 
 ### Docker Compose (Recommended)
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
+git clone https://github.com/monet88/kiro-go.git
+cd kiro-go
 mkdir -p data
-docker-compose up -d
+docker compose up -d
+```
+
+### Shared VPS Deployment (with Caddy Reverse Proxy)
+
+If you are deploying on a shared VPS behind a Caddy reverse proxy, you can use the pre-configured VPS compose:
+
+```bash
+git clone https://github.com/monet88/kiro-go.git
+cd kiro-go
+mkdir -p data
+# Optional: copy and override environments (e.g. ADMIN_PASSWORD, callback URLs)
+# cp .env.vps.example .env
+docker compose -f docker-compose.vps.yml up -d
 ```
 
 ### Docker Run
@@ -39,14 +50,14 @@ docker run -d \
   -e ADMIN_PASSWORD=your_secure_password \
   -v /path/to/data:/app/data \
   --restart unless-stopped \
-  ghcr.io/quorinex/kiro-go:latest
+  ghcr.io/monet88/kiro-go:latest
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/Quorinex/Kiro-Go.git
-cd Kiro-Go
+git clone https://github.com/monet88/kiro-go.git
+cd kiro-go
 go build -o kiro-go .
 ./kiro-go
 ```
@@ -87,7 +98,7 @@ Open `http://localhost:8080/admin`, log in, add accounts, then call the API:
 curl http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-sonnet-4.5","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
 
 # OpenAI
 curl http://localhost:8080/v1/chat/completions \
@@ -98,7 +109,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## Thinking Mode
 
-Append a suffix (default `-thinking`) to the model name, e.g. `claude-sonnet-4.5-thinking`. Claude-compatible requests that include a top-level `thinking` config such as `{"type":"enabled","budget_tokens":2048}` or `{"type":"adaptive"}` also enable thinking mode automatically. Configure output format in the admin panel under Settings - Thinking Mode.
+Append a suffix (default `-thinking`) to the model name, e.g. `claude-sonnet-5-thinking`. Claude-compatible requests that include a top-level `thinking` config such as `{"type":"enabled","budget_tokens":2048}` or `{"type":"adaptive"}` also enable thinking mode automatically. Configure output format in the admin panel under Settings - Thinking Mode.
 
 ## Outbound Proxy
 
