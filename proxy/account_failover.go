@@ -158,14 +158,18 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		h.disableAccountOverage(account)
 		h.pool.RecordError(account.ID, false)
 	case isSuspicious429ErrorMessage(errMsg):
-		h.pool.QuarantineAccount429(account.ID)
+		// Treat suspicious 429 the same as transient — short cooldown, no disable.
+		h.pool.RecordTransient429(account.ID, getTransient429Cooldown())
+		logger.Warnf("[AccountFailover] Suspicious 429 for %s, keeping account enabled (quarantine disabled)", account.Email)
 	case isTransient429ErrorMessage(errMsg):
 		// Apply a configurable cooldown so the pool queue paces retries against
 		// the upstream rate-limit window instead of hammering the same account.
 		h.pool.RecordTransient429(account.ID, getTransient429Cooldown())
 		logger.Warnf("[AccountFailover] Transient 429 for %s, keeping account enabled for retry", account.Email)
 	case isQuotaErrorMessage(errMsg):
-		h.pool.QuarantineAccount429(account.ID)
+		// Short cooldown instead of quarantine — account stays enabled.
+		h.pool.RecordTransient429(account.ID, getTransient429Cooldown())
+		logger.Warnf("[AccountFailover] Quota 429 for %s, keeping account enabled (quarantine disabled)", account.Email)
 	case isSuspensionErrorMessage(errMsg):
 		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
 	case isProfileUnavailableErrorMessage(errMsg):
@@ -188,14 +192,18 @@ func (h *Handler) handleAccountTestFailure(account *config.Account, err error) {
 	errMsg := err.Error()
 	switch {
 	case isSuspicious429ErrorMessage(errMsg):
-		h.pool.QuarantineAccount429(account.ID)
+		// Manual test path: no quarantine, just log.
+		h.pool.RecordTransient429(account.ID, 0)
+		logger.Warnf("[AccountFailover] Manual test hit suspicious 429 for %s, keeping account enabled (quarantine disabled)", account.Email)
 	case isTransient429ErrorMessage(errMsg):
 		// Manual test path: record the 429 for visibility but do NOT cool the
 		// account — a one-off probe should not pause live routing.
 		h.pool.RecordTransient429(account.ID, 0)
 		logger.Warnf("[AccountFailover] Manual test hit transient 429 for %s, keeping account enabled", account.Email)
 	case isQuotaErrorMessage(errMsg):
-		h.pool.QuarantineAccount429(account.ID)
+		// No quarantine, just log.
+		h.pool.RecordTransient429(account.ID, 0)
+		logger.Warnf("[AccountFailover] Manual test hit quota 429 for %s, keeping account enabled (quarantine disabled)", account.Email)
 	case isOverageErrorMessage(errMsg):
 		h.disableAccountOverage(account)
 		h.disableAccount(account, "DISABLED", "Manual test failed: "+errMsg)
@@ -218,12 +226,11 @@ func (h *Handler) handleAccountTestFailure(account *config.Account, err error) {
 func (h *Handler) handleAccountError(account *config.Account, excluded map[string]bool, err error) {
 	excluded[account.ID] = true
 	h.handleAccountFailure(account, err)
-	// Transient 429: the pool applies a configurable cooldown (via
-	// routingConcurrency.transient429CooldownMs, default 5000ms). Clearing
-	// the handler-level exclusion lets the pool queue wait and retry the
-	// same account once the cooldown expires, instead of failing immediately
-	// when it is the only account that supports the requested model.
-	if isTransient429ErrorMessage(err.Error()) {
+	// All 429 variants (transient, suspicious, quota) now use short cooldown
+	// instead of quarantine. Clear the handler-level exclusion so the pool
+	// queue can wait and retry the same account once cooldown expires.
+	errMsg := err.Error()
+	if isTransient429ErrorMessage(errMsg) || isSuspicious429ErrorMessage(errMsg) || isQuotaErrorMessage(errMsg) {
 		delete(excluded, account.ID)
 	}
 }
