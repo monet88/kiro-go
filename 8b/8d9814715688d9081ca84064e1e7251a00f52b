@@ -1,0 +1,54 @@
+docs/agents/domain.md
+  s_1a2543bc7d27ce::t_1f2911657e9765 1-51
+docs/adr/0001-cross-account-prompt-cache.md
+  s_9ed4add135c84e::t_b8365973c28e40 1-13
+docs/adr/0002-kiro-api-key-dual-write.md
+  s_9ed4add135c84e::t_04cd724134a855 1-15
+CONTEXT.md
+  s_9ed4add135c84e::t_de9bf50b857a87 57,76-80
+  s_9ed4add135c84e::t_fc6c4c6f1fb7c4 66-70,74-75
+  s_9ed4add135c84e::t_2c4d6a65627c92 81-86
+  s_9ed4add135c84e::t_f27bc01a19f3a2 42-48
+  s_9ed4add135c84e::t_bcd0b645e6b062 62-65
+  s_9ed4add135c84e::t_4780b69dd04962 1-20,25-36,41,49-56
+  s_9ed4add135c84e::t_31d3a6f762aa71 72
+  s_9ed4add135c84e::t_3a94c95c80489b 21-24
+  s_9ed4add135c84e::t_23f13f7070706b 58-61
+  s_9ed4add135c84e::t_8fc62295189679 71,73
+  s_9ed4add135c84e::t_f421e02473c3dd 87-102
+  s_9ed4add135c84e::t_9703f97b1a9f8b 37-40
+docs/agents/triage-labels.md
+  s_1a2543bc7d27ce::t_f0eacf5e3aea1e 1-15
+docs/agents/issue-tracker.md
+  s_1a2543bc7d27ce::t_8d716edc77a0ad 1-45
+docs/superpowers/plans/2026-07-14-port-stream-cache-apikey.md
+  s_9ed4add135c84e::t_85793b63fc617c 1-110
+.gitignore
+  s_9ed4add135c84e::t_76417291188931 25
+AGENTS.md
+  s_1a2543bc7d27ce::t_c0766a6520c57c 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "8b8d9814715688d9081ca84064e1e7251a00f52b",
+  "prompts": {},
+  "sessions": {
+    "s_1a2543bc7d27ce": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "a6902b88-825a-4dac-b86a-f79f5e26e269",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_9ed4add135c84e": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "8429e66e-4ddc-4890-82b7-00e074d61868",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
