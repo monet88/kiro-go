@@ -215,7 +215,7 @@ func MaskApiKey(key string) string {
 	if key == "" {
 		return ""
 	}
-	if len(key) <= 10 {
+	if len(key) <= 20 {
 		return strings.Repeat("*", len(key))
 	}
 	return key[:6] + "****" + key[len(key)-4:]

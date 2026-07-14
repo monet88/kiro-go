@@ -102,6 +102,37 @@ func TestAddAccountEnforcesApiKeyDualWrite(t *testing.T) {
 	}
 }
 
+func TestAddAccountsSupportsApiKeyAccounts(t *testing.T) {
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := AddAccount(Account{ID: "existing", KiroApiKey: "ksk_existing", AuthMethod: "api_key"}); err != nil {
+		t.Fatalf("seed existing API-key Account: %v", err)
+	}
+
+	added, skipped, err := AddAccounts([]Account{
+		{ID: "api-new", KiroApiKey: "ksk_new", AuthMethod: "apikey"},
+		{ID: "api-existing-duplicate", KiroApiKey: "ksk_existing", AuthMethod: "api_key"},
+		{ID: "api-batch-duplicate", AccessToken: "ksk_new", AuthMethod: "api_key"},
+		{ID: "api-whitespace", AccessToken: "   ", AuthMethod: "api_key"},
+		{ID: "oauth-new", RefreshToken: "oauth_refresh", AuthMethod: "social"},
+		{ID: "oauth-empty", AuthMethod: "social"},
+	})
+	if err != nil {
+		t.Fatalf("AddAccounts: %v", err)
+	}
+	if added != 2 || skipped != 4 {
+		t.Fatalf("AddAccounts counts = (%d added, %d skipped), want (2, 4)", added, skipped)
+	}
+	got := findAccount(t, "api-new")
+	if got.AuthMethod != "api_key" || got.KiroApiKey != "ksk_new" || got.AccessToken != "ksk_new" {
+		t.Fatalf("API-key Account not normalized after bulk add: %+v", got)
+	}
+	if got := findAccount(t, "oauth-new"); got.RefreshToken != "oauth_refresh" {
+		t.Fatalf("OAuth Account changed during bulk add: %+v", got)
+	}
+}
+
 // TestUpdateAccountEnforcesApiKeyDualWrite verifies the invariant holds through
 // UpdateAccount (edit path).
 func TestUpdateAccountEnforcesApiKeyDualWrite(t *testing.T) {

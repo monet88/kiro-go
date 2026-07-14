@@ -115,9 +115,10 @@ func AddAccount(account Account) error {
 // AddAccount in a loop would cause (each AddAccount re-serializes the entire
 // config.json). Accounts whose RefreshToken already exists (against the current
 // config or earlier entries in the same batch) are skipped to keep bulk imports
-// idempotent across retries/re-pastes. Entries with an empty RefreshToken are
-// also skipped — there is no stable identity to dedup on and they cannot be
-// activated later. Returns how many were added and how many were skipped.
+// idempotent across retries/re-pastes. API-key Accounts use KiroApiKey as their
+// identity; OAuth Accounts use RefreshToken. Entries without the credential
+// required by their auth method are skipped. Returns how many were added and how
+// many were skipped.
 //
 // Save() is only invoked when at least one account is actually added, so a
 // fully-duplicate batch does not churn the config file.
@@ -125,26 +126,41 @@ func AddAccounts(accounts []Account) (added int, skipped int, err error) {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 
-	// Seed the seen-set with refresh tokens already persisted so the batch
-	// dedups against existing accounts, not just within itself.
+	dedupKey := func(account Account) string {
+		NormalizeApiKeyCredential(&account)
+		if account.IsApiKeyCredential() {
+			if strings.TrimSpace(account.KiroApiKey) == "" {
+				return ""
+			}
+			return "api_key\x00" + account.KiroApiKey
+		}
+		if account.RefreshToken == "" {
+			return ""
+		}
+		return "oauth\x00" + account.RefreshToken
+	}
+
+	// Seed the seen-set with credentials already persisted so the batch dedups
+	// against existing accounts, not just within itself.
 	seen := make(map[string]struct{}, len(cfg.Accounts)+len(accounts))
 	for i := range cfg.Accounts {
-		if rt := cfg.Accounts[i].RefreshToken; rt != "" {
-			seen[rt] = struct{}{}
+		if key := dedupKey(cfg.Accounts[i]); key != "" {
+			seen[key] = struct{}{}
 		}
 	}
 
 	for _, a := range accounts {
-		if a.RefreshToken == "" {
-			skipped++
-			continue
-		}
-		if _, dup := seen[a.RefreshToken]; dup {
-			skipped++
-			continue
-		}
-		seen[a.RefreshToken] = struct{}{}
 		NormalizeApiKeyCredential(&a)
+		key := dedupKey(a)
+		if key == "" {
+			skipped++
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			skipped++
+			continue
+		}
+		seen[key] = struct{}{}
 		cfg.Accounts = append(cfg.Accounts, a)
 		added++
 	}
