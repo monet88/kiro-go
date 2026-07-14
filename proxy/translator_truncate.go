@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
+	"unicode/utf8"
+
 	"kiro-go/config"
 )
 
@@ -154,6 +156,13 @@ func truncateCurrentMessage(payload *KiroPayload, maxPayloadBytes int) {
 			cur.Content = minimalFallbackUserContent
 			return
 		}
-		cur.Content = cur.Content[:budget]
+		// Back off to the nearest UTF-8 rune boundary at or below budget so a
+		// multi-byte character (e.g. CJK, emoji) is never split, which would
+		// produce an invalid string and break JSON marshalling / upstream.
+		cut := budget
+		for cut > 0 && !utf8.RuneStart(cur.Content[cut]) {
+			cut--
+		}
+		cur.Content = cur.Content[:cut]
 	}
 }

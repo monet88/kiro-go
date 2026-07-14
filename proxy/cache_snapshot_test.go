@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -202,4 +203,57 @@ func TestPromptCacheSnapshotSaverFinalFlush(t *testing.T) {
 	if warm.CacheReadInputTokens <= 0 {
 		t.Fatalf("expected final flush to persist entry, got %+v", warm)
 	}
+}
+
+// TestPromptCacheSnapshotLoadCapsAtMaxEntries verifies that loading a snapshot
+// with more entries than the tracker's maxEntries keeps only the leading (most-
+// recently-used) entries and never inserts more than maxEntries into the LRU.
+func TestPromptCacheSnapshotLoadCapsAtMaxEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prompt_cache.json")
+
+	// Hand-build a snapshot with 5 distinct live entries, MRU-first.
+	now := time.Now()
+	snap := promptCacheSnapshot{
+		Version: promptCacheSnapshotVersion,
+		SavedAt: now,
+	}
+	for i := 0; i < 5; i++ {
+		var fp [32]byte
+		fp[0] = byte(i + 1) // distinct, non-zero fingerprints
+		snap.Entries = append(snap.Entries, promptCacheSnapshotEntry{
+			Fingerprint: hexEncodeForTest(fp),
+			ExpiresAt:   now.Add(time.Hour),
+			TTLNanos:    int64(time.Hour),
+		})
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	// Tracker bounded to 3 entries: load must keep only the first 3 (MRU).
+	reader := newPromptCacheTracker(time.Hour, 3, 0.85)
+	if err := reader.LoadSnapshot(path); err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+
+	reader.mu.Lock()
+	got := len(reader.entries)
+	reader.mu.Unlock()
+	if got != 3 {
+		t.Fatalf("expected load to cap at maxEntries=3, got %d entries", got)
+	}
+}
+
+func hexEncodeForTest(fp [32]byte) string {
+	const hexdigits = "0123456789abcdef"
+	out := make([]byte, 64)
+	for i, b := range fp {
+		out[i*2] = hexdigits[b>>4]
+		out[i*2+1] = hexdigits[b&0x0f]
+	}
+	return string(out)
 }

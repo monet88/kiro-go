@@ -91,6 +91,37 @@ func TestClaudeToKiroSmallPayloadNotTruncated(t *testing.T) {
 	}
 }
 
+// TestTruncateCurrentMessageUTF8Safe verifies the last-resort current-message
+// truncation backs off to a rune boundary so a multi-byte character is never
+// split, which would otherwise produce invalid UTF-8 and break JSON marshalling
+// or upstream processing.
+func TestTruncateCurrentMessageUTF8Safe(t *testing.T) {
+	// 3-byte CJK runes so most byte budgets land mid-rune without a backoff.
+	content := strings.Repeat("上下文内容", 2000) // 10000 runes, 30000 bytes
+	payload := &KiroPayload{}
+	payload.ConversationState.CurrentMessage.UserInputMessage = KiroUserInputMessage{
+		Content: content,
+		ModelID: "claude-sonnet-4.5",
+		Origin:  "AI_EDITOR",
+	}
+
+	// Cap well below the content size to force truncation of the current message.
+	truncateCurrentMessage(payload, 4096)
+
+	got := payload.ConversationState.CurrentMessage.UserInputMessage.Content
+	if len(got) >= len(content) {
+		t.Fatalf("expected current message to be truncated, got %d >= %d bytes", len(got), len(content))
+	}
+	// Must remain valid UTF-8 (no rune split at the cut point).
+	if string([]rune(got)) != got {
+		t.Fatalf("truncation split a multi-byte rune: result is not valid UTF-8")
+	}
+	// The whole payload must marshal cleanly (invalid UTF-8 would corrupt JSON).
+	if _, err := json.Marshal(payload); err != nil {
+		t.Fatalf("payload with truncated content failed to marshal: %v", err)
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

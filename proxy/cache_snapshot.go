@@ -149,10 +149,19 @@ func (t *promptCacheTracker) LoadSnapshot(path string) error {
 	loaded := 0
 
 	t.mu.Lock()
+	// Entries are serialized MRU→LRU (exportSnapshotLocked walks the LRU front→
+	// back). If the snapshot holds more entries than maxEntries, keep only the
+	// MRU prefix so we never allocate list/map nodes we would immediately evict.
+	// evictOverflowLocked below is still a correctness backstop (the tracker may
+	// already hold entries when LoadSnapshot runs).
+	entries := snap.Entries
+	if t.maxEntries > 0 && len(entries) > t.maxEntries {
+		entries = entries[:t.maxEntries]
+	}
 	// Insert in reverse so the first (most-recently-used) snapshot entry ends up
 	// at the front of the LRU after all PushFront calls.
-	for i := len(snap.Entries) - 1; i >= 0; i-- {
-		e := snap.Entries[i]
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
 		if !e.ExpiresAt.After(now) {
 			continue // expired while at rest
 		}
