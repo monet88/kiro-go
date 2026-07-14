@@ -1,0 +1,47 @@
+proxy/cache_snapshot_test.go
+  s_c6e51357c0cd62::t_ca73b479b422d1 6
+  s_c6e51357c0cd62::t_7323a14727aaa2 147,152
+  s_c6e51357c0cd62::t_dc04aa390543dc 125
+  s_c6e51357c0cd62::t_710c3efdbf3bb7 4
+  s_c6e51357c0cd62::t_b131ee386f7be5 1-3,5,7-124,126-146,148-149,160-161
+  s_c6e51357c0cd62::t_d58f6fffbbd997 150-151,153-159
+proxy/cache_snapshot.go
+  s_c6e51357c0cd62::t_e196b7428d4981 1-181,185-204
+  s_c6e51357c0cd62::t_3a3baed494e65c 182-184
+proxy/translator_truncate_test.go
+  s_c6e51357c0cd62::t_df8028c34511c0 5,12-13
+  s_c6e51357c0cd62::t_860f1b18cbdad2 41-43
+proxy/admin_settings.go
+  s_c6e51357c0cd62::t_e196b7428d4981 37-39,88-98,154-179
+config/config_maxpayload_test.go
+  s_c6e51357c0cd62::t_8700b0eb288b0b 1-59
+proxy/handler.go
+  s_c6e51357c0cd62::t_c66695a159aa01 81-85
+  s_c6e51357c0cd62::t_1cf7d2d47eba79 80,86-90
+config/config_types.go
+  s_c6e51357c0cd62::t_26f4f155679302 215-222
+proxy/admin_settings_test.go
+  s_c6e51357c0cd62::t_b54405682e355c 1-94
+proxy/translator_truncate.go
+  s_c6e51357c0cd62::t_f68ec9962b1951 3-6,9,17-21,31-37,41-43
+  s_c6e51357c0cd62::t_2c01fa05d2eec5 106
+  s_c6e51357c0cd62::t_cba62d9c6015e0 145
+config/config_settings.go
+  s_c6e51357c0cd62::t_955a3a25b2e2b2 473-516
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "732d14d1a8668c143e1b8b262f0ea210fd51408b",
+  "prompts": {},
+  "sessions": {
+    "s_c6e51357c0cd62": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "4335ee01-4070-4c80-ad87-16ae8a79c258",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
