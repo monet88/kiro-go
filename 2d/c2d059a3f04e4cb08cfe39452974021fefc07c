@@ -1,0 +1,19 @@
+.gitattributes
+  s_bf3aaff4a14954::t_79ea589cf60048 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "2dc2d059a3f04e4cb08cfe39452974021fefc07c",
+  "prompts": {},
+  "sessions": {
+    "s_bf3aaff4a14954": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d7471357-460b-4509-b12f-651ef5f1ca35",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
