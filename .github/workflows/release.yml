@@ -1,0 +1,156 @@
+name: Release
+
+# Auto-build cross-platform binaries and publish a GitHub Release whenever a
+# version tag (e.g. v1.2.0) is pushed. The release body is an auto-generated
+# changelog (commits since the previous tag) plus attached archives + checksums.
+#
+# Cut a release:
+#   git tag v1.2.0 && git push origin v1.2.0
+on:
+  push:
+    tags: ['v*']
+  # Manual trigger for re-running against an existing tag from the Actions UI.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build a release for (e.g. v1.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          BIN=kiro-go
+          if [ "$GOOS" = "windows" ]; then BIN=kiro-go.exe; fi
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X kiro-go/config.Version=${{ steps.version.outputs.version }}" \
+            -o "dist/${BIN}" .
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          NAME="kiro-go_${{ steps.version.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          STAGE="stage/${NAME}"
+          mkdir -p "${STAGE}"
+          # Bundle the runtime web/ assets and docs alongside the binary so the
+          # extracted archive runs standalone (see Dockerfile: web/ sits next to
+          # the binary at runtime).
+          cp -r web "${STAGE}/web"
+          cp README.md LICENSE "${STAGE}/" 2>/dev/null || true
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            cp dist/kiro-go.exe "${STAGE}/"
+            (cd stage && zip -r "../${NAME}.zip" "${NAME}" >/dev/null)
+            echo "asset=${NAME}.zip" >> "$GITHUB_OUTPUT"
+          else
+            cp dist/kiro-go "${STAGE}/"
+            tar -czf "${NAME}.tar.gz" -C stage "${NAME}"
+            echo "asset=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.asset }}
+          path: ${{ steps.package.outputs.asset }}
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=${REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum * > checksums.txt
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo "## Changelog"
+            echo
+            if [ -n "${PREV}" ]; then
+              git log --no-merges --pretty=format:'- %s (%h)' "${PREV}..${TAG}"
+              echo
+              echo
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV}...${TAG}"
+            else
+              git log --no-merges --pretty=format:'- %s (%h)' "${TAG}"
+            fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/checksums.txt
+          fail_on_unmatched_files: true
