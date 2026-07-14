@@ -264,6 +264,14 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 	if profileArn := strings.TrimSpace(account.ProfileArn); profileArn != "" {
 		return profileArn, nil
 	}
+	// API-key Accounts (ADR-0002) authenticate with a static Kiro API Key and do
+	// not participate in IDC/OAuth profile discovery. Attempting ListAvailableProfiles
+	// or an OAuth refresh fallback for them is meaningless (no refresh material) and
+	// would surface as a hard error. Treat a missing profile ARN as a soft skip so
+	// data-plane calls proceed on the default region like other profileless paths.
+	if account.IsApiKeyCredential() {
+		return "", fmt.Errorf("profile ARN resolution skipped: API-key Account uses a static Kiro API Key")
+	}
 
 	profileLookupSuppressed := isProfileArnResolutionSuppressed(account)
 	var profileUnsupportedErr error

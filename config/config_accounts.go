@@ -1,6 +1,48 @@
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// apiKeyAuthMethod is the canonical AuthMethod value for an API-key Account.
+const apiKeyAuthMethod = "api_key"
+
+// IsApiKeyCredential reports whether this Account authenticates with a static
+// Kiro API Key (ksk_…) rather than an OAuth-style credential. It is true when
+// KiroApiKey is set OR AuthMethod is api_key/apikey (case-insensitive). API-key
+// Accounts skip OAuth refresh and profile-ARN resolution and send their bearer
+// with the API_KEY token type (ADR-0002).
+func (a Account) IsApiKeyCredential() bool {
+	if strings.TrimSpace(a.KiroApiKey) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(a.AuthMethod)) {
+	case "api_key", "apikey":
+		return true
+	}
+	return false
+}
+
+// NormalizeApiKeyCredential enforces the API-key Account invariants on write
+// (ADR-0002): when the Account is an API-key credential, AuthMethod is
+// canonicalized to "api_key" and AccessToken is dual-written from KiroApiKey so
+// existing bearer call sites keep working. When KiroApiKey is empty but the
+// AuthMethod says api_key/apikey (e.g. add-one with the secret placed in
+// AccessToken), KiroApiKey is back-filled from AccessToken so the source of
+// truth is populated. Every persistence choke point calls this so no write path
+// can leave the two fields diverged. It is exported so admin handlers can
+// normalize their request-local copy to match what is persisted.
+func NormalizeApiKeyCredential(a *Account) {
+	if a == nil || !a.IsApiKeyCredential() {
+		return
+	}
+	a.AuthMethod = apiKeyAuthMethod
+	if strings.TrimSpace(a.KiroApiKey) == "" {
+		a.KiroApiKey = a.AccessToken
+	}
+	a.AccessToken = a.KiroApiKey
+}
 
 func AutoQuarantineSuspicious429Reason() string {
 	return autoQuarantineSuspicious429Reason
@@ -63,6 +105,7 @@ func GetEnabledAccounts() []Account {
 func AddAccount(account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
+	NormalizeApiKeyCredential(&account)
 	cfg.Accounts = append(cfg.Accounts, account)
 	return Save()
 }
@@ -101,6 +144,7 @@ func AddAccounts(accounts []Account) (added int, skipped int, err error) {
 			continue
 		}
 		seen[a.RefreshToken] = struct{}{}
+		NormalizeApiKeyCredential(&a)
 		cfg.Accounts = append(cfg.Accounts, a)
 		added++
 	}
@@ -154,6 +198,7 @@ func AccountIDExists(id string) bool {
 func UpdateAccount(id string, account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
+	NormalizeApiKeyCredential(&account)
 	for i, a := range cfg.Accounts {
 		if a.ID == id {
 			cfg.Accounts[i] = account
@@ -300,6 +345,17 @@ func UpdateAccountToken(id, accessToken, refreshToken string, expiresAt int64) e
 	defer cfgLock.Unlock()
 	for i, a := range cfg.Accounts {
 		if a.ID == id {
+			// An API-key Account never refreshes; KiroApiKey is the source of
+			// truth. Guard against a stray OAuth-style token write clobbering the
+			// static bearer (ADR-0002). Re-run the normalizer rather than blindly
+			// assigning AccessToken = KiroApiKey: if state has drifted so that
+			// KiroApiKey is empty but AuthMethod says api_key, the normalizer
+			// back-fills KiroApiKey from AccessToken before mirroring, so the guard
+			// can never zero out an otherwise-valid static bearer.
+			if cfg.Accounts[i].IsApiKeyCredential() {
+				NormalizeApiKeyCredential(&cfg.Accounts[i])
+				return Save()
+			}
 			cfg.Accounts[i].AccessToken = accessToken
 			if refreshToken != "" {
 				cfg.Accounts[i].RefreshToken = refreshToken

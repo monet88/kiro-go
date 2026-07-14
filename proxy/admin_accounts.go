@@ -90,6 +90,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"userId":            a.UserId,
 			"nickname":          a.Nickname,
 			"authMethod":        a.AuthMethod,
+			"isApiKey":          a.IsApiKeyCredential(),
 			"provider":          a.Provider,
 			"region":            a.Region,
 			"enabled":           a.Enabled,
@@ -153,6 +154,10 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	if account.Region == "" {
 		account.Region = "us-east-1"
 	}
+	// Enforce the API-key Account invariants on the local copy too (config.AddAccount
+	// normalizes what it persists, but the copy below drives the model-fetch guard and
+	// response): AuthMethod→api_key and AccessToken mirrored from KiroApiKey (ADR-0002).
+	config.NormalizeApiKeyCredential(&account)
 
 	if err := config.AddAccount(account); err != nil {
 		w.WriteHeader(500)
@@ -675,17 +680,29 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		}
 	}
 
+	// API-key Accounts hold a static Kiro API Key (ksk_…) mirrored into
+	// AccessToken. Never return the raw secret even from the "full" detail
+	// endpoint (ADR-0002): mask it and surface the masked value under kiroApiKey
+	// so the UI can show the credential kind without leaking it.
+	accessTokenField := account.AccessToken
+	isApiKey := account.IsApiKeyCredential()
+	if isApiKey {
+		accessTokenField = config.MaskApiKey(account.AccessToken)
+	}
+
 	// 返回完整账号信息（包含敏感字段）
 	result := map[string]interface{}{
 		"id":                account.ID,
 		"email":             account.Email,
 		"userId":            account.UserId,
 		"nickname":          account.Nickname,
-		"accessToken":       account.AccessToken,
+		"accessToken":       accessTokenField,
 		"refreshToken":      account.RefreshToken,
 		"clientId":          account.ClientID,
 		"clientSecret":      account.ClientSecret,
 		"authMethod":        account.AuthMethod,
+		"isApiKey":          isApiKey,
+		"kiroApiKey":        config.MaskApiKey(account.KiroApiKey),
 		"provider":          account.Provider,
 		"region":            account.Region,
 		"expiresAt":         account.ExpiresAt,

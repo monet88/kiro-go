@@ -69,6 +69,13 @@ func applyKiroBaseHeaders(req *http.Request, account *config.Account, values kir
 	if account != nil && account.AuthMethod == "external_idp" {
 		req.Header.Set("TokenType", "EXTERNAL_IDP")
 	}
+	// API-key Accounts (static ksk_… bearer, ADR-0002) must announce the API_KEY
+	// token type so Kiro accepts the bearer as an API key rather than an OAuth
+	// access token. IsApiKeyCredential() also covers add-one/import paths where
+	// AuthMethod is api_key/apikey.
+	if account != nil && account.IsApiKeyCredential() {
+		req.Header.Set("TokenType", "API_KEY")
+	}
 	if values.Host != "" {
 		req.Host = values.Host
 	}

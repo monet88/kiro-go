@@ -190,6 +190,31 @@ func Load() error {
 			return err
 		}
 	}
+
+	// Repair the API-key Account dual-write invariant on load (ADR-0002).
+	// A config.json produced by a hand-edit, an incomplete restore, or an older
+	// build could persist an API-key Account with the two fields diverged (e.g.
+	// authMethod=api_key with the secret only in accessToken, or kiroApiKey set
+	// but accessToken stale). NormalizeApiKeyCredential canonicalizes AuthMethod
+	// and mirrors KiroApiKey↔AccessToken so every runtime bearer/header path sees
+	// a consistent secret without waiting for the account to pass through an
+	// AddAccount/UpdateAccount write.
+	apiKeyRepaired := false
+	for i := range cfg.Accounts {
+		if !cfg.Accounts[i].IsApiKeyCredential() {
+			continue
+		}
+		before := cfg.Accounts[i]
+		NormalizeApiKeyCredential(&cfg.Accounts[i])
+		if cfg.Accounts[i] != before {
+			apiKeyRepaired = true
+		}
+	}
+	if apiKeyRepaired {
+		if err := saveLocked(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

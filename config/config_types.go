@@ -13,13 +13,20 @@ type Account struct {
 	RefreshToken string `json:"refreshToken"`           // OAuth refresh token for token renewal
 	ClientID     string `json:"clientId,omitempty"`     // OIDC client ID (for IdC auth)
 	ClientSecret string `json:"clientSecret,omitempty"` // OIDC client secret (for IdC auth)
-	AuthMethod   string `json:"authMethod"`             // Authentication method: "idc" (AWS IdC), "social" (GitHub/Google), or "external_idp" (enterprise SSO, e.g. Azure AD)
-	Provider     string `json:"provider,omitempty"`     // Identity provider name (e.g., "BuilderId", "GitHub", "AzureAD")
-	Region       string `json:"region"`                 // AWS region for OIDC endpoints
-	StartUrl     string `json:"startUrl,omitempty"`     // AWS SSO start URL
-	ExpiresAt    int64  `json:"expiresAt,omitempty"`    // Token expiration timestamp (Unix seconds)
-	MachineId    string `json:"machineId,omitempty"`    // UUID machine identifier for request tracking
-	ProfileArn   string `json:"profileArn,omitempty"`   // CodeWhisperer/Kiro profile ARN for generation requests
+	AuthMethod   string `json:"authMethod"`             // Authentication method: "idc" (AWS IdC), "social" (GitHub/Google), "external_idp" (enterprise SSO, e.g. Azure AD), or "api_key" (static Kiro API Key)
+
+	// KiroApiKey is the source of truth for an API-key Account (AuthMethod=api_key).
+	// It holds a static Kiro API Key bearer (ksk_…) and is dual-written into
+	// AccessToken on every write path so existing bearer call sites keep working
+	// (ADR-0002). API-key Accounts skip OAuth refresh and profile-ARN resolution.
+	// This is NOT a Gateway API Key (client→proxy sk-…, see config.ApiKeys).
+	KiroApiKey string `json:"kiroApiKey,omitempty"`
+	Provider   string `json:"provider,omitempty"`   // Identity provider name (e.g., "BuilderId", "GitHub", "AzureAD")
+	Region     string `json:"region"`               // AWS region for OIDC endpoints
+	StartUrl   string `json:"startUrl,omitempty"`   // AWS SSO start URL
+	ExpiresAt  int64  `json:"expiresAt,omitempty"`  // Token expiration timestamp (Unix seconds)
+	MachineId  string `json:"machineId,omitempty"`  // UUID machine identifier for request tracking
+	ProfileArn string `json:"profileArn,omitempty"` // CodeWhisperer/Kiro profile ARN for generation requests
 
 	// External IdP (enterprise SSO, e.g. Microsoft 365 / Entra ID / Azure AD) refresh material.
 	// When AuthMethod == "external_idp" the credential is an IdP-issued OAuth token refreshed
