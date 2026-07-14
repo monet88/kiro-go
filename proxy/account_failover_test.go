@@ -44,6 +44,40 @@ func TestProfileUnavailableIsSoftAndNotAuth(t *testing.T) {
 	if !isProfileArnResolutionSoftError(errString(msg)) {
 		t.Fatal("expected empty/no profile to be soft for REST helpers")
 	}
+	// Case-insensitive soft match (upstream / wrapped errors vary casing).
+	if !isProfileArnResolutionSoftError(errString("No Available Kiro Profile")) {
+		t.Fatal("expected case-insensitive soft match for no available profile")
+	}
+	if !isProfileArnResolutionSoftError(errString("EMPTY PROFILE LIST from listAvailableProfiles")) {
+		t.Fatal("expected case-insensitive soft match for empty profile list")
+	}
+}
+
+func TestIsTransientCredentialRefreshError(t *testing.T) {
+	transient := []string{
+		`Post "https://oidc.us-east-1.amazonaws.com/token": dial tcp: lookup oidc.us-east-1.amazonaws.com: no such host`,
+		"token refresh: i/o timeout",
+		"connection reset by peer",
+		"refresh failed: HTTP 503 service unavailable",
+		"unexpected EOF",
+	}
+	for _, msg := range transient {
+		if !isTransientCredentialRefreshError(errString(msg)) {
+			t.Fatalf("expected transient: %q", msg)
+		}
+	}
+	permanent := []string{
+		"refresh failed: 400 invalid_grant",
+		"token refresh failed: invalid_grant",
+		"refresh failed: 401 unauthorized",
+		"Social token refresh requires clientId",
+		"IDC token endpoint is empty",
+	}
+	for _, msg := range permanent {
+		if isTransientCredentialRefreshError(errString(msg)) {
+			t.Fatalf("expected permanent auth failure, got transient: %q", msg)
+		}
+	}
 }
 
 type errString string

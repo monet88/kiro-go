@@ -412,23 +412,7 @@ func CallKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 			lastErr = err
 			continue
 		}
-
-		host := ""
-		if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
-			host = parsedURL.Host
-		}
-		headerValues := buildStreamingHeaderValues(account, host)
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "*/*")
-		if ep.AmzTarget != "" {
-			req.Header.Set("X-Amz-Target", ep.AmzTarget)
-		}
-		applyKiroBaseHeaders(req, account, headerValues)
-		req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-		req.Header.Set("x-amzn-codewhisperer-optout", "true")
-		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
-		req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
+		setKiroStreamingRequestHeaders(req, account, ep.AmzTarget, epURL)
 
 		resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
 		if err != nil {
@@ -478,21 +462,7 @@ func CallKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 					lastErr = retryErr
 					continue
 				}
-				host := ""
-				if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
-					host = parsedURL.Host
-				}
-				headerValues := buildStreamingHeaderValues(account, host)
-				retryReq.Header.Set("Content-Type", "application/json")
-				retryReq.Header.Set("Accept", "*/*")
-				if ep.AmzTarget != "" {
-					retryReq.Header.Set("X-Amz-Target", ep.AmzTarget)
-				}
-				applyKiroBaseHeaders(retryReq, account, headerValues)
-				retryReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-				retryReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-				retryReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
-				retryReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
+				setKiroStreamingRequestHeaders(retryReq, account, ep.AmzTarget, epURL)
 				retryResp, retryDoErr := GetClientForProxy(ResolveAccountProxyURL(account)).Do(retryReq)
 				if retryDoErr != nil {
 					lastErr = retryDoErr
@@ -552,6 +522,31 @@ func accountEmailForLog(account *config.Account) string {
 		return "<nil>"
 	}
 	return account.Email
+}
+
+// setKiroStreamingRequestHeaders applies the shared generateAssistantResponse
+// header set used by both the primary attempt and the profile-less 403 retry.
+func setKiroStreamingRequestHeaders(req *http.Request, account *config.Account, amzTarget, epURL string) {
+	if req == nil {
+		return
+	}
+	host := ""
+	if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
+		host = parsedURL.Host
+	} else if req.URL != nil {
+		host = req.URL.Host
+	}
+	headerValues := buildStreamingHeaderValues(account, host)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "*/*")
+	if amzTarget != "" {
+		req.Header.Set("X-Amz-Target", amzTarget)
+	}
+	applyKiroBaseHeaders(req, account, headerValues)
+	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
+	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 }
 
 // ==================== Event Stream Parsing ====================

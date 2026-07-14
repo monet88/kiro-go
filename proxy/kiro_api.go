@@ -7,6 +7,7 @@ import (
 	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"kiro-go/pool"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -380,8 +381,8 @@ func isProfileArnResolutionSoftError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "no available Kiro profile") || strings.Contains(msg, "empty profile list")
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no available kiro profile") || strings.Contains(msg, "empty profile list")
 }
 
 func ensureRestProfileArn(account *config.Account) error {
@@ -531,15 +532,24 @@ func isInvalidBearerTokenBody(body string) bool {
 
 // clearAccountProfileArn drops a cached profile ARN that upstream rejected for
 // this credential so later calls target the default data-plane without it.
+//
+// The request-scoped account pointer is a pool/config copy (not a shared pool
+// entry). We update that local copy for the remainder of the request, and sync
+// persistence via config + the pool lock so later acquires see the cleared ARN.
 func clearAccountProfileArn(account *config.Account) {
 	if account == nil || strings.TrimSpace(account.ProfileArn) == "" {
 		return
 	}
 	account.ProfileArn = ""
-	if id := strings.TrimSpace(account.ID); id != "" {
-		if err := config.UpdateAccountProfileArn(id, ""); err != nil {
-			logger.Warnf("[ProfileArn] Failed to clear rejected profile ARN for %s: %v", accountEmailForLog(account), err)
-		}
+	id := strings.TrimSpace(account.ID)
+	if id == "" {
+		return
+	}
+	if err := config.UpdateAccountProfileArn(id, ""); err != nil {
+		logger.Warnf("[ProfileArn] Failed to clear rejected profile ARN for %s: %v", accountEmailForLog(account), err)
+	}
+	if p := pool.GetPool(); p != nil {
+		p.UpdateProfileArn(id, "")
 	}
 }
 

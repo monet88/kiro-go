@@ -101,8 +101,15 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 		return err
 	}
 
-	// 更新内存
+	// Persist under pool/config first; request-local copy is updated after so
+	// concurrent acquires observe tokens via GetByID rather than shared fields.
 	h.pool.UpdateToken(account.ID, accessToken, refreshToken, expiresAt)
+	config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt)
+	if profileArn != "" {
+		h.pool.UpdateProfileArn(account.ID, profileArn)
+		config.UpdateAccountProfileArn(account.ID, profileArn)
+	}
+
 	account.AccessToken = accessToken
 	if refreshToken != "" {
 		account.RefreshToken = refreshToken
@@ -110,11 +117,7 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 	account.ExpiresAt = expiresAt
 	if profileArn != "" {
 		account.ProfileArn = profileArn
-		config.UpdateAccountProfileArn(account.ID, profileArn)
 	}
-
-	// 持久化
-	config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt)
 
 	return nil
 }

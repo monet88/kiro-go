@@ -183,55 +183,129 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		// mismatches, not only for truly dead credentials. Attempt one OIDC/social
 		// refresh before disabling: if refresh works the account stays online and
 		// background refresh continues; real invalid_grant still disables.
-		if h.tryRefreshAccountAfterAuthError(account) {
+		switch h.tryRefreshAccountAfterAuthError(account) {
+		case authRefreshRecovered:
 			logger.Warnf("[AccountFailover] Auth-looking error for %s recovered by token refresh; keeping account enabled", account.Email)
 			h.pool.RecordError(account.ID, false)
 			return
+		case authRefreshTransient:
+			// Network/DNS/timeout during refresh is not proof the credential is dead.
+			// Keep the account enabled with a short cooldown instead of permanent disable.
+			h.pool.RecordTransient429(account.ID, getTransient429Cooldown())
+			logger.Warnf("[AccountFailover] Auth-looking error for %s had transient token refresh failure; keeping account enabled", account.Email)
+			return
+		default:
+			h.disableAccount(account, "DISABLED", "Authentication failed - token invalid or expired")
 		}
-		h.disableAccount(account, "DISABLED", "Authentication failed - token invalid or expired")
 	default:
 		h.pool.RecordError(account.ID, false)
 	}
 }
 
+// authRefreshOutcome is the result of an opportunistic credential refresh after
+// an upstream auth-looking failure.
+type authRefreshOutcome int
+
+const (
+	// authRefreshFailed means refresh could not prove the credential is still
+	// usable (missing material, invalid_grant, empty token). Caller may disable.
+	authRefreshFailed authRefreshOutcome = iota
+	// authRefreshRecovered means a fresh access token was obtained and persisted.
+	authRefreshRecovered
+	// authRefreshTransient means refresh failed for transport reasons; caller
+	// must not permanently disable the account.
+	authRefreshTransient
+)
+
 // tryRefreshAccountAfterAuthError forces a credential refresh after an upstream
-// auth-looking failure. Returns true when a new access token was obtained so the
-// caller can keep the account enabled. Failed refresh (including invalid_grant)
-// returns false and leaves disable/ban decisions to the caller.
-func (h *Handler) tryRefreshAccountAfterAuthError(account *config.Account) bool {
+// auth-looking failure. Persistence goes through the pool lock + config writers;
+// the request-scoped account copy is updated so the current handler sees the
+// new tokens if it continues to use that pointer.
+func (h *Handler) tryRefreshAccountAfterAuthError(account *config.Account) authRefreshOutcome {
 	if account == nil || strings.TrimSpace(account.RefreshToken) == "" {
-		return false
+		return authRefreshFailed
 	}
 
 	mu := h.accountRefreshLock(account.ID)
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Prefer the latest credentials from the pool (another request may have
+	// already refreshed while we waited on the lock).
+	if latest := h.pool.GetByID(account.ID); latest != nil {
+		account.AccessToken = latest.AccessToken
+		account.RefreshToken = latest.RefreshToken
+		account.ExpiresAt = latest.ExpiresAt
+		account.ProfileArn = latest.ProfileArn
+	}
+
 	accessToken, refreshToken, expiresAt, profileArn, err := auth.RefreshToken(account)
 	if err != nil {
 		logger.Warnf("[AccountFailover] Token refresh after auth error failed for %s: %v", account.Email, err)
-		return false
+		if isTransientCredentialRefreshError(err) {
+			return authRefreshTransient
+		}
+		return authRefreshFailed
 	}
 	if strings.TrimSpace(accessToken) == "" {
-		return false
+		return authRefreshFailed
 	}
 
+	// Persist under pool/config first so concurrent acquires observe the update
+	// through GetByID/UpdateToken rather than racing on shared struct fields.
 	h.pool.UpdateToken(account.ID, accessToken, refreshToken, expiresAt)
+	if err := config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt); err != nil {
+		logger.Warnf("[AccountFailover] Failed to persist refreshed token for %s: %v", account.Email, err)
+	}
+	if profileArn != "" {
+		h.pool.UpdateProfileArn(account.ID, profileArn)
+		if err := config.UpdateAccountProfileArn(account.ID, profileArn); err != nil {
+			logger.Warnf("[AccountFailover] Failed to persist profile ARN for %s: %v", account.Email, err)
+		}
+	}
+
+	// Request-local copy only (Acquire/GetByID return copies).
 	account.AccessToken = accessToken
 	if refreshToken != "" {
 		account.RefreshToken = refreshToken
 	}
 	account.ExpiresAt = expiresAt
-	if err := config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt); err != nil {
-		logger.Warnf("[AccountFailover] Failed to persist refreshed token for %s: %v", account.Email, err)
-	}
 	if profileArn != "" {
 		account.ProfileArn = profileArn
-		if err := config.UpdateAccountProfileArn(account.ID, profileArn); err != nil {
-			logger.Warnf("[AccountFailover] Failed to persist profile ARN for %s: %v", account.Email, err)
-		}
 	}
-	return true
+	return authRefreshRecovered
+}
+
+// isTransientCredentialRefreshError reports refresh failures that are transport
+// noise rather than proof the refresh token is invalid. Permanent auth failures
+// (invalid_grant, HTTP 4xx from the token endpoint) return false.
+func isTransientCredentialRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "invalid_grant") ||
+		strings.Contains(msg, "refresh failed: 400") ||
+		strings.Contains(msg, "refresh failed: 401") ||
+		strings.Contains(msg, "refresh failed: 403") ||
+		strings.Contains(msg, "requires clientid") ||
+		strings.Contains(msg, "requires clientsecret") ||
+		strings.Contains(msg, "token endpoint is empty") {
+		return false
+	}
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "server misbehaving") ||
+		strings.Contains(msg, "tls handshake") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "http 5") ||
+		strings.Contains(msg, "http 429")
 }
 
 func (h *Handler) handleAccountTestFailure(account *config.Account, err error) {
