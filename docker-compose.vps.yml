@@ -18,7 +18,7 @@
 # and reload with: sudo systemctl reload caddy
 services:
   kiro-go:
-    image: ${KIRO_GO_IMAGE:-kiro-go:vps-good}
+    image: ${KIRO_GO_IMAGE:-ghcr.io/monet88/kiro-go:latest}
     pull_policy: ${KIRO_GO_PULL_POLICY:-missing}
     container_name: kiro-go
     environment:
