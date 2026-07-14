@@ -1,0 +1,56 @@
+auth/iam_sso_region_test.go
+  s_b796aef1e7df4b::t_5019455d070b02 1-22
+proxy/kiro_api.go
+  s_b796aef1e7df4b::t_5019455d070b02 10,49-52,64-67
+  s_b796aef1e7df4b::t_f36e8861801116 92-95,98-105,109-114,166-172,175,239-243,246,274-279,374-385,526-555
+proxy/account_failover.go
+  s_b796aef1e7df4b::t_5019455d070b02 4
+  s_b796aef1e7df4b::t_b17d34e53ad98b 182-199,205-310
+auth/iam_sso.go
+  s_b796aef1e7df4b::t_5019455d070b02 13
+  s_b796aef1e7df4b::t_caeb1f3c89efb9 44-62,65-68
+proxy/handler_keepalive_test.go
+  s_b796aef1e7df4b::t_5019455d070b02 1-325
+proxy/handler_openai.go
+  s_b796aef1e7df4b::t_a06f5b7dd8316c 600
+  s_b796aef1e7df4b::t_5019455d070b02 116-119,147-167,291,450,495,497,556-557,561-584,587-590,599,601-602
+proxy/handler_stream.go
+  s_b796aef1e7df4b::t_5019455d070b02 7-8,11-99,101,106
+  s_b796aef1e7df4b::t_f2f2c57c5e73f3 100,102-105,107
+proxy/account_failover_test.go
+  s_b796aef1e7df4b::t_5019455d070b02 3-6,19,28-71,75,79-81,91,94-95
+  s_b796aef1e7df4b::t_8bb71a1e74407a 72-74,76-78,82-90,92-93
+proxy/handler_claude.go
+  s_b796aef1e7df4b::t_eb4d0adbfb8b6f 729-732
+  s_b796aef1e7df4b::t_5019455d070b02 240-244,271,295,329,348,357,384,411,421,448,595,607,616,648,692,700,706-710,713-720,734-736
+pool/account.go
+  s_b796aef1e7df4b::t_298ae871324855 1373-1386
+proxy/handler_routing.go
+  s_b796aef1e7df4b::t_10cebf99db3fd2 104-105,107-112
+proxy/kiro.go
+  s_b796aef1e7df4b::t_161e8551e76c53 415,446-493,527-551
+proxy/kiro_api_test.go
+  s_b796aef1e7df4b::t_dab8af82f7a0af 46-83
+proxy/kiro_region_test.go
+  s_b796aef1e7df4b::t_8f5605d6d9d5ab 62-66,74,77-85,96,103-105
+proxy/responses_handler.go
+  s_b796aef1e7df4b::t_48fb9f7afb5259 333-336,338,573,642
+web/app.js
+  s_b796aef1e7df4b::t_42bac5adf8c422 3388-3405,3412,3429-3439
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "555df28a5eb3b272e9621856f5d292799d0aecab",
+  "prompts": {},
+  "sessions": {
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
