@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"kiro-go/config"
 	"kiro-go/logger"
@@ -22,7 +23,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -76,7 +79,32 @@ func main() {
 		IdleTimeout:       time.Duration(config.GetServerIdleTimeout()) * time.Second,
 	}
 
-	if err := srv.ListenAndServe(); err != nil {
+	// Graceful shutdown: on SIGINT/SIGTERM, stop accepting new connections and
+	// let the handler flush its background state (stats + Prompt Cache Snapshot)
+	// so cache prefixes and counters survive a clean restart instead of relying
+	// on the last periodic flush.
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
 		logger.Fatalf("Server failed: %v", err)
+	case sig := <-shutdown:
+		logger.Infof("Received %s, shutting down gracefully...", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			logger.Warnf("HTTP server shutdown error: %v", err)
+		}
+		// Flush background state (final stats save + Prompt Cache Snapshot).
+		handler.Shutdown()
+		logger.Infof("Shutdown complete")
 	}
 }

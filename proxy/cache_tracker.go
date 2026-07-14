@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"bytes"
+	"container/list"
 	"crypto/sha256"
 	"encoding/json"
+	"kiro-go/config"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,19 +54,57 @@ type promptCacheEntry struct {
 	TTL       time.Duration
 }
 
-type promptCacheTracker struct {
-	mu               sync.Mutex
-	entriesByAccount map[string]map[[32]byte]promptCacheEntry
-	maxSupportedTTL  time.Duration
+// lruItem is the value stored in each LRU list element. It bundles the Cache
+// Fingerprint (the global key) with its entry so eviction from the back of the
+// list can also delete the corresponding map key.
+type lruItem struct {
+	Fingerprint [32]byte
+	Entry       promptCacheEntry
 }
 
-func newPromptCacheTracker(maxTTL time.Duration) *promptCacheTracker {
+// promptCacheTracker holds the Cross-account Prompt Cache (ADR-0001): a single
+// process-wide store keyed only by Cache Fingerprint, not per Account, so a
+// prefix written while serving one Account is readable when a different Account
+// serves the next turn. Entries are bounded by an in-memory LRU (maxEntries)
+// and expire by TTL; reported cache-read tokens are capped at maxRatio of a
+// request's total input tokens.
+type promptCacheTracker struct {
+	mu              sync.Mutex
+	entries         map[[32]byte]*list.Element // Cache Fingerprint -> LRU element
+	lru             *list.List                 // front = most recently used
+	maxEntries      int
+	maxRatio        float64
+	maxSupportedTTL time.Duration
+	// flushMu serializes FlushSnapshot so two concurrent flushers (the periodic
+	// saver and, e.g., a shutdown-triggered final flush) never race on the same
+	// temp file. It is separate from mu: the snapshot copy is taken under mu,
+	// but the disk write is guarded by flushMu so it does not block Compute/Update.
+	flushMu sync.Mutex
+}
+
+// newPromptCacheTracker constructs the Cross-account Prompt Cache. maxEntries
+// and maxRatio of zero (or out of range) fall back to the configured defaults
+// via the config layer, which also applies the minimum-entries floor. Explicit
+// positive values are used as-is (tests use tiny bounds to exercise eviction).
+func newPromptCacheTracker(maxTTL time.Duration, maxEntries int, maxRatio float64) *promptCacheTracker {
 	if maxTTL <= 0 {
 		maxTTL = defaultPromptCacheTTL
 	}
+	if maxEntries <= 0 {
+		maxEntries = config.GetPromptCacheMaxEntries()
+	}
+	// The negated-range test also rejects NaN (every NaN comparison is false),
+	// so a NaN ratio falls back to the configured default instead of poisoning
+	// the token math in Compute.
+	if !(maxRatio > 0 && maxRatio <= 1) {
+		maxRatio = config.GetPromptCacheMaxRatio()
+	}
 	return &promptCacheTracker{
-		entriesByAccount: make(map[string]map[[32]byte]promptCacheEntry),
-		maxSupportedTTL:  maxTTL,
+		entries:         make(map[[32]byte]*list.Element),
+		lru:             list.New(),
+		maxEntries:      maxEntries,
+		maxRatio:        maxRatio,
+		maxSupportedTTL: maxTTL,
 	}
 }
 
@@ -72,6 +112,19 @@ func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTo
 	blocks := flattenClaudeCacheBlocks(req)
 	if len(blocks) == 0 {
 		return nil
+	}
+
+	// Auto-prefix (Anthropic-style automatic caching): when the request carries
+	// no explicit cache_control anywhere, message-end boundaries still act as
+	// breakpoints so a stable leading prefix can be reported as a hit on repeat.
+	// The minimum-token floor applied in Compute/Update keeps this from
+	// reporting fake hits on short requests.
+	hasExplicitCacheControl := false
+	for _, block := range blocks {
+		if block.TTL > 0 {
+			hasExplicitCacheControl = true
+			break
+		}
 	}
 
 	hasher := sha256.New()
@@ -89,12 +142,17 @@ func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTo
 		//   2) Once any explicit breakpoint has been seen, every message-end
 		//      boundary becomes an implicit breakpoint so that multi-turn
 		//      conversations can hit earlier stored prefixes.
+		//   3) Auto-prefix: with no explicit cache_control anywhere, every
+		//      message-end boundary is an implicit breakpoint at the default
+		//      TTL, mirroring Anthropic's automatic prefix caching.
 		breakpointTTL := time.Duration(0)
 		if block.TTL > 0 {
 			breakpointTTL = block.TTL
 			activeTTL = block.TTL
 		} else if block.IsMessageEnd && activeTTL > 0 {
 			breakpointTTL = activeTTL
+		} else if block.IsMessageEnd && !hasExplicitCacheControl {
+			breakpointTTL = defaultPromptCacheTTL
 		}
 
 		if breakpointTTL <= 0 {
@@ -139,9 +197,8 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 	defer t.mu.Unlock()
 	t.pruneExpiredLocked(now)
 
-	entries := t.entriesByAccount[accountID]
-	if len(entries) == 0 {
-		// First request for this account: report creation only if above threshold.
+	if len(t.entries) == 0 {
+		// Cold cache: report creation only if above threshold.
 		effectiveCreation := lastTokens
 		if effectiveCreation < minTokens {
 			effectiveCreation = 0
@@ -155,10 +212,10 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 		}
 	}
 
-	// Cap cacheable tokens at 85% of total input to ensure a realistic
+	// Cap cacheable tokens at maxRatio of total input to ensure a realistic
 	// uncached portion. The newest content in a request is never fully
 	// served from cache on the current turn.
-	maxCacheable := int(float64(profile.TotalInputTokens) * 0.85)
+	maxCacheable := int(float64(profile.TotalInputTokens) * t.maxRatio)
 	if lastTokens > maxCacheable {
 		lastTokens = maxCacheable
 	}
@@ -170,12 +227,18 @@ func (t *promptCacheTracker) Compute(accountID string, profile *promptCacheProfi
 		if breakpoint.CumulativeTokens < minTokens {
 			continue
 		}
-		entry, ok := entries[breakpoint.Fingerprint]
-		if !ok || entry.ExpiresAt.Before(now) {
+		// Cross-account lookup: the store is keyed only by Cache Fingerprint,
+		// so a prefix written under any Account matches here (ADR-0001).
+		elem, ok := t.entries[breakpoint.Fingerprint]
+		if !ok {
 			continue
 		}
-		entry.ExpiresAt = now.Add(entry.TTL)
-		entries[breakpoint.Fingerprint] = entry
+		item := elem.Value.(*lruItem)
+		if item.Entry.ExpiresAt.Before(now) {
+			continue
+		}
+		item.Entry.ExpiresAt = now.Add(item.Entry.TTL)
+		t.lru.MoveToFront(elem)
 		matchedTokens = minInt(breakpoint.CumulativeTokens, profile.TotalInputTokens)
 		if matchedTokens > lastTokens {
 			matchedTokens = lastTokens
@@ -204,34 +267,55 @@ func (t *promptCacheTracker) Update(accountID string, profile *promptCacheProfil
 	defer t.mu.Unlock()
 	t.pruneExpiredLocked(now)
 
-	entries := t.entriesByAccount[accountID]
-	if entries == nil {
-		entries = make(map[[32]byte]promptCacheEntry)
-		t.entriesByAccount[accountID] = entries
-	}
-
 	for _, breakpoint := range profile.Breakpoints {
 		// Skip breakpoints below the minimum cacheable token threshold.
 		if breakpoint.CumulativeTokens < minTokens {
 			continue
 		}
-		entries[breakpoint.Fingerprint] = promptCacheEntry{
+		entry := promptCacheEntry{
 			ExpiresAt: now.Add(breakpoint.TTL),
 			TTL:       breakpoint.TTL,
 		}
+		// Cross-account write: keyed only by Cache Fingerprint (ADR-0001).
+		if elem, ok := t.entries[breakpoint.Fingerprint]; ok {
+			item := elem.Value.(*lruItem)
+			item.Entry = entry
+			t.lru.MoveToFront(elem)
+			continue
+		}
+		elem := t.lru.PushFront(&lruItem{
+			Fingerprint: breakpoint.Fingerprint,
+			Entry:       entry,
+		})
+		t.entries[breakpoint.Fingerprint] = elem
+		t.evictOverflowLocked()
 	}
 }
 
+// evictOverflowLocked removes least-recently-used entries from the back of the
+// LRU list until the store is within maxEntries. Caller must hold t.mu.
+func (t *promptCacheTracker) evictOverflowLocked() {
+	for t.maxEntries > 0 && t.lru.Len() > t.maxEntries {
+		back := t.lru.Back()
+		if back == nil {
+			return
+		}
+		item := back.Value.(*lruItem)
+		t.lru.Remove(back)
+		delete(t.entries, item.Fingerprint)
+	}
+}
+
+// pruneExpiredLocked drops entries whose TTL has elapsed. Caller must hold t.mu.
 func (t *promptCacheTracker) pruneExpiredLocked(now time.Time) {
-	for accountID, entries := range t.entriesByAccount {
-		for fingerprint, entry := range entries {
-			if !entry.ExpiresAt.After(now) {
-				delete(entries, fingerprint)
-			}
+	for elem := t.lru.Back(); elem != nil; {
+		prev := elem.Prev()
+		item := elem.Value.(*lruItem)
+		if !item.Entry.ExpiresAt.After(now) {
+			t.lru.Remove(elem)
+			delete(t.entries, item.Fingerprint)
 		}
-		if len(entries) == 0 {
-			delete(t.entriesByAccount, accountID)
-		}
+		elem = prev
 	}
 }
 
@@ -295,11 +379,20 @@ func appendSystemCacheBlocks(blocks *[]cacheablePromptBlock, system interface{})
 			},
 		}, false)
 	case []interface{}:
-		for i, block := range v {
+		// Structural system-skip: Claude Code injects a dynamic leading system
+		// block per turn (session start time, cwd, git branch, etc.) that has no
+		// cache_control. When the client anchors the cacheable prefix with an
+		// explicit cache_control system block, treat every block before that
+		// anchor as dynamic prelude and drop it from the fingerprint, so the
+		// prefix at the anchor stays stable when only the leading blocks drift.
+		// With no anchor (auto-prefix), keep all blocks — the leading system is
+		// itself the stable prefix.
+		startIdx := leadingSystemSkipCount(v)
+		for i := startIdx; i < len(v); i++ {
 			appendPromptBlock(blocks, map[string]interface{}{
 				"kind":         "system",
 				"system_index": i,
-				"block":        block,
+				"block":        v[i],
 			}, false)
 		}
 	case []string:
@@ -314,6 +407,25 @@ func appendSystemCacheBlocks(blocks *[]cacheablePromptBlock, system interface{})
 			}, false)
 		}
 	}
+}
+
+// leadingSystemSkipCount returns the number of leading system blocks to skip
+// from the fingerprint. If any system block carries an explicit cache_control
+// anchor, every block before the first such anchor is skipped as dynamic
+// prelude. If no block is anchored, nothing is skipped (auto-prefix keeps the
+// leading system as the stable prefix).
+func leadingSystemSkipCount(system []interface{}) int {
+	anchor := -1
+	for i, block := range system {
+		if extractPromptCacheTTL(block) > 0 {
+			anchor = i
+			break
+		}
+	}
+	if anchor <= 0 {
+		return 0
+	}
+	return anchor
 }
 
 func appendMessageCacheBlocks(blocks *[]cacheablePromptBlock, messageIndex int, msg ClaudeMessage) {

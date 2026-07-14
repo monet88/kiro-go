@@ -399,6 +399,121 @@ func UpdateServerIdleTimeout(seconds int) error {
 	return Save()
 }
 
+// DefaultPromptCacheMaxEntries is the default in-memory Cross-account Prompt
+// Cache LRU bound (ADR-0001): the maximum number of distinct Cache Fingerprints
+// held across all Accounts before the least-recently-used entry is evicted.
+const DefaultPromptCacheMaxEntries = 131072
+
+// minPromptCacheMaxEntries is the floor applied to a misconfigured (too small)
+// PromptCacheMaxEntries so multi-turn prefixes are not evicted immediately.
+const minPromptCacheMaxEntries = 1024
+
+// DefaultPromptCacheMaxRatio caps reported cache-read tokens at 85% of total
+// input tokens so the newest turn is never reported as fully cache-served.
+const DefaultPromptCacheMaxRatio = 0.85
+
+// GetPromptCacheMaxEntries returns the configured in-memory Prompt Cache LRU
+// bound, falling back to DefaultPromptCacheMaxEntries when unset and raising
+// too-small values to the minimum floor.
+func GetPromptCacheMaxEntries() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.PromptCacheMaxEntries <= 0 {
+		return DefaultPromptCacheMaxEntries
+	}
+	if cfg.PromptCacheMaxEntries < minPromptCacheMaxEntries {
+		return minPromptCacheMaxEntries
+	}
+	return cfg.PromptCacheMaxEntries
+}
+
+// GetPromptCacheMaxRatio returns the configured cache-read ratio cap, falling
+// back to DefaultPromptCacheMaxRatio when unset or out of the (0,1] range. The
+// negated-range test also rejects NaN (every comparison with NaN is false).
+func GetPromptCacheMaxRatio() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || !(cfg.PromptCacheMaxRatio > 0 && cfg.PromptCacheMaxRatio <= 1) {
+		return DefaultPromptCacheMaxRatio
+	}
+	return cfg.PromptCacheMaxRatio
+}
+
+// UpdatePromptCacheMaxEntries updates the in-memory Prompt Cache LRU bound and
+// persists the change. Non-positive values reset to the default; values below
+// the minimum floor are raised to the floor.
+func UpdatePromptCacheMaxEntries(entries int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	switch {
+	case entries <= 0:
+		cfg.PromptCacheMaxEntries = DefaultPromptCacheMaxEntries
+	case entries < minPromptCacheMaxEntries:
+		cfg.PromptCacheMaxEntries = minPromptCacheMaxEntries
+	default:
+		cfg.PromptCacheMaxEntries = entries
+	}
+	return Save()
+}
+
+// UpdatePromptCacheMaxRatio updates the cache-read ratio cap and persists the
+// change. Out-of-range values (including NaN) reset to the default; the
+// negated-range test rejects NaN since every NaN comparison is false.
+func UpdatePromptCacheMaxRatio(ratio float64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if ratio > 0 && ratio <= 1 {
+		cfg.PromptCacheMaxRatio = ratio
+	} else {
+		cfg.PromptCacheMaxRatio = DefaultPromptCacheMaxRatio
+	}
+	return Save()
+}
+
+// DefaultMaxPayloadBytes is the default upper bound for the serialized Kiro
+// request body. It replaces the old hard ~900KiB cap: operators can raise it via
+// MaxPayloadBytes so large multimodal/long-context requests are not truncated
+// before reaching upstream. Kiro rejects oversized requests with HTTP 400
+// (CONTENT_LENGTH_EXCEEDS_THRESHOLD), so the effective ceiling is still bounded
+// by upstream; this knob only controls the local truncation trigger.
+const DefaultMaxPayloadBytes = 2_000_000
+
+// minMaxPayloadBytes is a sanity floor so a misconfigured tiny value cannot
+// truncate essentially every request down to the fallback placeholder.
+const minMaxPayloadBytes = 64 * 1024
+
+// GetMaxPayloadBytes returns the configured serialized request-body cap used by
+// the local truncation pass, falling back to DefaultMaxPayloadBytes when unset
+// and raising too-small values to the minimum floor.
+func GetMaxPayloadBytes() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.MaxPayloadBytes <= 0 {
+		return DefaultMaxPayloadBytes
+	}
+	if cfg.MaxPayloadBytes < minMaxPayloadBytes {
+		return minMaxPayloadBytes
+	}
+	return cfg.MaxPayloadBytes
+}
+
+// UpdateMaxPayloadBytes updates the serialized request-body cap and persists the
+// change. Non-positive values reset to the default; values below the minimum
+// floor are raised to the floor.
+func UpdateMaxPayloadBytes(bytes int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	switch {
+	case bytes <= 0:
+		cfg.MaxPayloadBytes = DefaultMaxPayloadBytes
+	case bytes < minMaxPayloadBytes:
+		cfg.MaxPayloadBytes = minMaxPayloadBytes
+	default:
+		cfg.MaxPayloadBytes = bytes
+	}
+	return Save()
+}
+
 func GetKiroClientConfig() KiroClientConfig {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()

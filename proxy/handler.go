@@ -29,6 +29,13 @@ type Handler struct {
 	startTime       int64
 	stopRefresh     chan struct{}
 	stopStatsSaver  chan struct{}
+	// snapshotSaverDone is closed by the Prompt Cache Snapshot saver goroutine
+	// after it performs its final flush on shutdown, letting Shutdown block until
+	// the snapshot is safely on disk before the process exits.
+	snapshotSaverDone chan struct{}
+	// shutdownOnce guards Shutdown so the stop channels are closed exactly once,
+	// even if Shutdown is called from multiple signal handlers.
+	shutdownOnce sync.Once
 	// 模型缓存
 	cachedModels    []ModelInfo
 	modelsCacheMu   sync.RWMutex
@@ -65,18 +72,33 @@ func NewHandler() *Handler {
 
 	totalReq, successReq, failedReq, totalTokens, totalCredits := config.GetStats()
 	h := &Handler{
-		pool:            pool.GetPool(),
-		totalRequests:   int64(totalReq),
-		successRequests: int64(successReq),
-		failedRequests:  int64(failedReq),
-		totalTokens:     int64(totalTokens),
-		totalCredits:    totalCredits,
-		startTime:       time.Now().Unix(),
-		stopRefresh:     make(chan struct{}),
-		stopStatsSaver:  make(chan struct{}),
-		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
-		kamImports:      newKamImportManager(),
+		pool:              pool.GetPool(),
+		totalRequests:     int64(totalReq),
+		successRequests:   int64(successReq),
+		failedRequests:    int64(failedReq),
+		totalTokens:       int64(totalTokens),
+		totalCredits:      totalCredits,
+		startTime:         time.Now().Unix(),
+		stopRefresh:       make(chan struct{}),
+		stopStatsSaver:    make(chan struct{}),
+		snapshotSaverDone: make(chan struct{}),
+		promptCache:       newPromptCacheTracker(defaultPromptCacheTTL, 0, 0),
+		kamImports:        newKamImportManager(),
 	}
+	// Load the Prompt Cache Snapshot so cross-account cache prefixes survive a
+	// process restart, then start the periodic atomic flush loop. The saver also
+	// performs one final flush when stopStatsSaver is closed by Shutdown, so a
+	// graceful stop (SIGINT/SIGTERM) persists the latest cache state; between
+	// stops, durability comes from the periodic flush.
+	snapshotPath := promptCacheSnapshotPath()
+	if err := h.promptCache.LoadSnapshot(snapshotPath); err != nil {
+		logger.Warnf("failed to load prompt cache snapshot: %v", err)
+	}
+	go func() {
+		// Signal completion so Shutdown can block until the final flush lands.
+		defer close(h.snapshotSaverDone)
+		h.promptCache.startSnapshotSaver(snapshotPath, h.stopStatsSaver)
+	}()
 	// 启动后台刷新
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
@@ -85,6 +107,24 @@ func NewHandler() *Handler {
 	// 清理过期的 stored responses（>30 天）
 	go purgeExpiredResponses(responsesDefaultTTL)
 	return h
+}
+
+// Shutdown stops the Handler's background goroutines and triggers their exit
+// flush paths: the stats saver persists a final stats snapshot and the prompt
+// cache saver writes a final Prompt Cache Snapshot to disk. It is safe to call
+// more than once (idempotent) and safe to call concurrently. Callers should
+// invoke it during graceful shutdown (e.g. on SIGINT/SIGTERM) so the latest
+// cache state survives a restart without waiting for the next periodic flush.
+func (h *Handler) Shutdown() {
+	h.shutdownOnce.Do(func() {
+		close(h.stopRefresh)
+		close(h.stopStatsSaver)
+		// Wait for the prompt cache saver to finish its final flush so a caller
+		// that exits the process right after Shutdown does not race the disk
+		// write. Other savers (stats/metrics) flush synchronously on the same
+		// stop signal; only the snapshot saver runs disk IO worth waiting for.
+		<-h.snapshotSaverDone
+	})
 }
 
 // backgroundRefresh 后台定时刷新账户信息
