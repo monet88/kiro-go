@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,8 +41,31 @@ var scopes = []string{
 	"codewhisperer:taskassist",
 }
 
+// regionFromIamStartURL extracts the Identity Center portal region from a Start URL
+// host when present (e.g. ssoins-xxx.portal.eu-north-1.app.aws → eu-north-1).
+// Empty means "caller should keep the explicit region / default".
+func regionFromIamStartURL(startUrl string) string {
+	u, err := url.Parse(strings.TrimSpace(startUrl))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	// https://xxx.portal.{region}.app.aws/
+	if i := strings.Index(host, ".portal."); i >= 0 {
+		rest := host[i+len(".portal."):]
+		if j := strings.Index(rest, ".app.aws"); j > 0 {
+			return rest[:j]
+		}
+	}
+	return ""
+}
+
 // StartIamSsoLogin 发起 IAM SSO 登录
 func StartIamSsoLogin(startUrl, region string) (sessionID, authorizeUrl string, expiresIn int, err error) {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		region = regionFromIamStartURL(startUrl)
+	}
 	if region == "" {
 		region = "us-east-1"
 	}
