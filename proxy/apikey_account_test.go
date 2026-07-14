@@ -232,6 +232,74 @@ func TestApiGetAccountFullMasksApiKey(t *testing.T) {
 	}
 }
 
+func TestApiExportAccountsMasksApiKeyAccountSecret(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	const apiKeySecret = "ksk_verylongsecretvalue1234567890"
+	const oauthToken = "oauth_portable_backup_token"
+	if err := config.AddAccount(config.Account{ID: "api-key", KiroApiKey: apiKeySecret, AuthMethod: "api_key", Enabled: true}); err != nil {
+		t.Fatalf("AddAccount API-key Account: %v", err)
+	}
+	if err := config.AddAccount(config.Account{ID: "oauth", AccessToken: oauthToken, AuthMethod: "social", Enabled: true}); err != nil {
+		t.Fatalf("AddAccount OAuth Account: %v", err)
+	}
+
+	h := &Handler{pool: accountpool.GetPool()}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/export", strings.NewReader(`{"ids":["api-key","oauth"]}`))
+	rec := httptest.NewRecorder()
+	h.apiExportAccounts(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), apiKeySecret) {
+		t.Fatalf("raw Kiro API Key leaked in export payload: %s", rec.Body.String())
+	}
+	var response struct {
+		Accounts []struct {
+			ID          string `json:"id"`
+			Credentials struct {
+				AccessToken string `json:"accessToken"`
+			} `json:"credentials"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode export: %v", err)
+	}
+	accessTokens := make(map[string]string, len(response.Accounts))
+	for _, account := range response.Accounts {
+		accessTokens[account.ID] = account.Credentials.AccessToken
+	}
+	if got := accessTokens["api-key"]; got != config.MaskApiKey(apiKeySecret) {
+		t.Fatalf("API-key Account accessToken = %q, want masked value %q", got, config.MaskApiKey(apiKeySecret))
+	}
+	if got := accessTokens["oauth"]; got != oauthToken {
+		t.Fatalf("OAuth Account accessToken = %q, want portable token %q", got, oauthToken)
+	}
+}
+
+func TestApiSetAccountOverageRejectsApiKeyAccount(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{ID: "api-key", KiroApiKey: "ksk_static", AuthMethod: "api_key", Enabled: true}); err != nil {
+		t.Fatalf("AddAccount API-key Account: %v", err)
+	}
+
+	h := &Handler{pool: accountpool.GetPool()}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/api-key/overage", strings.NewReader(`{"enabled":true}`))
+	rec := httptest.NewRecorder()
+	h.apiSetAccountOverage(rec, req, "api-key")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Overages cannot be toggled for an API-key Account") {
+		t.Fatalf("expected clear unsupported-operation error, got %s", rec.Body.String())
+	}
+}
+
 func findProxyAccount(t *testing.T, email string) config.Account {
 	t.Helper()
 	for _, a := range config.GetAccounts() {

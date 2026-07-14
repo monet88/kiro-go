@@ -324,6 +324,11 @@ func (h *Handler) apiSetAccountOverage(w http.ResponseWriter, r *http.Request, i
 		json.NewEncoder(w).Encode(map[string]string{"error": "Account not found"})
 		return
 	}
+	if account.IsApiKeyCredential() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Overages cannot be toggled for an API-key Account"})
+		return
+	}
 
 	snap, err := SetOverageStatus(account, body.Enabled)
 	if err != nil {

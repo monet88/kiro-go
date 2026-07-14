@@ -244,10 +244,10 @@ func TestResetApiKeyUsage(t *testing.T) {
 
 func TestApiKeyOverLimit(t *testing.T) {
 	tests := []struct {
-		name        string
-		entry       ApiKeyEntry
-		wantToken   bool
-		wantCredit  bool
+		name       string
+		entry      ApiKeyEntry
+		wantToken  bool
+		wantCredit bool
 	}{
 		{"unlimited", ApiKeyEntry{TokensUsed: 100, CreditsUsed: 5}, false, false},
 		{"under token limit", ApiKeyEntry{TokenLimit: 200, TokensUsed: 100}, false, false},
@@ -273,7 +273,9 @@ func TestMaskApiKey(t *testing.T) {
 		want string
 	}{
 		{"", ""},
-		{"short", "short"},
+		{"short", "*****"},
+		{"1234567890", "**********"},
+		{"12345678901", "123456****8901"},
 		{"sk-1234567890", "sk-123****7890"},
 	}
 	for _, tc := range tests {
