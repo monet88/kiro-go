@@ -1,0 +1,50 @@
+proxy/tool_compression.go
+  s_0cb294fde77bab::t_1f2d11a05479df 1-214
+proxy/upstream_error_hint_test.go
+  s_0cb294fde77bab::t_1f2d11a05479df 1-53
+proxy/upstream_error_hint.go
+  s_0cb294fde77bab::t_ad530f53719195 3-4
+  s_0cb294fde77bab::t_46b38d8b3e59a8 1-2,5-36
+proxy/inference_test.go
+  s_0cb294fde77bab::t_1f2d11a05479df 1-75
+proxy/tool_compression_test.go
+  s_0cb294fde77bab::t_1f2d11a05479df 1-301
+proxy/handler_claude.go
+  s_0cb294fde77bab::t_856031a2ae7381 714,718,722,871
+proxy/handler_openai.go
+  s_0cb294fde77bab::t_7a7af31d0426aa 551,662
+proxy/kiro.go
+  s_9ed4add135c84e::t_c301e49d300bff 239-241
+proxy/responses_handler.go
+  s_0cb294fde77bab::t_cde92150c98941 107,256,675
+proxy/translator_claude.go
+  s_0cb294fde77bab::t_dde00c56932d61 13,227
+proxy/translator_openai.go
+  s_0cb294fde77bab::t_d934fc67dfc176 16,326
+proxy/translator_tools.go
+  s_0cb294fde77bab::t_b4fbbec369cf8e 33,550
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "d9f02f29c8ab3b49e2ecea0dd3c858fe57a660b8",
+  "prompts": {},
+  "sessions": {
+    "s_0cb294fde77bab": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "7d38d091-610b-4376-a091-91e7f17e7522",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_9ed4add135c84e": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "8429e66e-4ddc-4890-82b7-00e074d61868",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
