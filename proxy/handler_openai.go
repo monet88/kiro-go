@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"kiro-go/config"
 	"net/http"
@@ -114,6 +113,10 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
+	// Stream Keepalive: idle SSE comments only; real chunks go through sse.WriteData.
+	sse := startStreamSSE(w, flusher)
+	defer sse.Stop()
+
 	// 获取 thinking 输出格式配置
 	thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 
@@ -141,6 +144,27 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
 				recordRequestMetrics("openai", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 
+				// Stop keepalive first; if a ping already committed SSE, finish as SSE.
+				sse.Stop()
+				if sse.Committed() {
+					errChunk := map[string]interface{}{
+						"id":      chatID,
+						"object":  "chat.completion.chunk",
+						"created": time.Now().Unix(),
+						"model":   model,
+						"choices": []map[string]interface{}{{
+							"index":         0,
+							"delta":         map[string]interface{}{},
+							"finish_reason": "error",
+						}},
+						"error": map[string]string{"message": routingErrorMessage(acquireErr)},
+					}
+					if data, mErr := json.Marshal(errChunk); mErr == nil {
+						sse.WriteData(string(data))
+					}
+					sse.WriteData("[DONE]")
+					return
+				}
 				h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(acquireErr))
 				return
 			}
@@ -264,8 +288,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				}
 			}
 			data, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(data))
-			flusher.Flush()
+			sse.WriteData(string(data))
 			responseStarted = true
 		}
 
@@ -424,8 +447,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				}
 				toolCallIndex++
 				data, _ := json.Marshal(chunk)
-				fmt.Fprintf(w, "data: %s\n\n", string(data))
-				flusher.Flush()
+				sse.WriteData(string(data))
 				responseStarted = true
 			},
 			OnComplete: func(inTok, outTok int) {
@@ -470,10 +492,9 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				}},
 			}
 			if data, mErr := json.Marshal(closeChunk); mErr == nil {
-				fmt.Fprintf(w, "data: %s\n\n", string(data))
+				sse.WriteData(string(data))
 			}
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
+			sse.WriteData("[DONE]")
 			return
 		}
 
@@ -532,14 +553,41 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 			},
 		}
 		data, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", string(data))
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		sse.WriteData(string(data))
+		sse.WriteData("[DONE]")
 		return
+	}
+
+	// Stop keepalive before any non-SSE error write so a late ping cannot race
+	// WriteHeader/JSON. If a keepalive already committed the body, stay on SSE.
+	sse.Stop()
+	streamCommitted := sse.Committed()
+
+	writeOpenAIStreamError := func(msg string) {
+		errChunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]interface{}{{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "error",
+			}},
+			"error": map[string]string{"message": msg},
+		}
+		if data, mErr := json.Marshal(errChunk); mErr == nil {
+			sse.WriteData(string(data))
+		}
+		sse.WriteData("[DONE]")
 	}
 
 	if lastErr == nil {
 		recordRequestMetrics("openai", model, true, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
+		if streamCommitted {
+			writeOpenAIStreamError("No available accounts")
+			return
+		}
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
@@ -548,6 +596,10 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
 	recordRequestMetrics("openai", model, true, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 	logRetryExhausted("openai", model, statusCode, errType, lastErr)
+	if streamCommitted {
+		writeOpenAIStreamError(lastErr.Error())
+		return
+	}
 	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), lastErr.Error())
 }
 
