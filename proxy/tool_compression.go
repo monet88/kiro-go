@@ -15,9 +15,9 @@ import (
 // 当一次请求携带的工具定义（name + description + inputSchema）序列化后的总字节数
 // 超过阈值时，对齐 kiro-rs 的 compress_tools_if_needed 做两步渐进压缩，避免把超大的
 // tools 数组原样上送、被 Kiro 上游以 "Improperly formed request." 拒绝：
-//  1. 递归简化每个工具的 inputSchema：仅保留结构骨架（type / required / properties 的
-//     key 与其 type），剥掉 description / examples / enum 等纯说明性字段（这些往往是体
-//     积大头，但对模型选参的结构理解非必需）。
+//  1. 递归简化每个工具的 inputSchema：保留结构与选参约束（type / required / enum /
+//     $ref / anyOf|oneOf|allOf / properties / items），剥掉 description / examples /
+//     default / title 等纯说明性字段（体积大头，对选参非必需）。
 //  2. 若简化 schema 后仍超阈值，按超出比例截断每个工具的 description（UTF-8 安全，至少
 //     保留 minToolDescChars 个字符，以免描述被砍到无法辨识工具用途）。
 //
@@ -25,8 +25,8 @@ import (
 // （cleanSchema）互补，不替代它们——前两者在单个工具维度先行处理，本函数只在所有工具
 // 加起来仍然过大时才介入。
 //
-// 与 upstream_error.go 的 isImproperlyFormedRejection 互补：那边在被上游拒绝后做检测、
-// 永久短路本请求；这里在发送前做预防、尽量不让请求被拒。
+// 与 upstream_error_hint.go 的 isImproperlyFormedRejection 互补：那边在被上游拒绝后
+// 把 opaque 文案改写成可操作 hint；这里在发送前做预防、尽量不让请求被拒。
 
 // defaultToolsSizeThreshold 是触发工具压缩的总字节阈值。20KB 对齐 kiro-rs 的
 // TOOL_SIZE_THRESHOLD 经验值；Kiro 上游真实红线未公开，可经 env 按实测调整。
@@ -50,11 +50,27 @@ func resolveToolsSizeThreshold() int {
 	return n
 }
 
-// compressToolsIfNeeded 在工具定义总体积超过阈值时执行两步压缩，否则原样返回。
-// 入参 tools 来自 convertClaudeTools / convertOpenAITools 的产出（已做过 per-tool
-// 截断与 schema 清理），本函数只负责总量收敛。
+// compressToolsIfNeeded resolves the operator threshold (env) and logs when a
+// compression pass actually shrinks the tool list. Algorithm lives in compressTools.
 func compressToolsIfNeeded(tools []KiroToolWrapper) []KiroToolWrapper {
 	threshold := resolveToolsSizeThreshold()
+	if threshold <= 0 || len(tools) == 0 {
+		return tools
+	}
+	before := estimateToolsBytes(tools)
+	out := compressTools(tools, threshold)
+	after := estimateToolsBytes(out)
+	if before > threshold && after < before {
+		logger.Infof("[ToolCompress] %d tools compressed: %d -> %d bytes (threshold %d)",
+			len(tools), before, after, threshold)
+	}
+	return out
+}
+
+// compressTools runs the pure progressive compression algorithm against an
+// explicit threshold. threshold<=0 or empty tools is a no-op. Callers that need
+// env resolution use compressToolsIfNeeded.
+func compressTools(tools []KiroToolWrapper, threshold int) []KiroToolWrapper {
 	if threshold <= 0 || len(tools) == 0 {
 		return tools
 	}
@@ -64,28 +80,22 @@ func compressToolsIfNeeded(tools []KiroToolWrapper) []KiroToolWrapper {
 		return tools
 	}
 
-	// 第一步：递归简化每个工具的 inputSchema。
+	// Step 1: recursively simplify each tool's inputSchema.
 	for i := range tools {
 		tools[i].ToolSpecification.InputSchema.JSON = simplifyToolSchema(tools[i].ToolSpecification.InputSchema.JSON)
 	}
 
 	afterSchema := estimateToolsBytes(tools)
 	if afterSchema <= threshold {
-		logger.Infof("[ToolCompress] %d tools compressed by schema simplification: %d -> %d bytes (threshold %d)",
-			len(tools), total, afterSchema, threshold)
 		return tools
 	}
 
-	// 第二步：按比例截断 description（基于字节比例，UTF-8 安全，保底 minToolDescChars）。
+	// Step 2: truncate descriptions by byte ratio (UTF-8 safe, minToolDescChars floor).
 	ratio := float64(threshold) / float64(afterSchema)
 	for i := range tools {
 		desc := tools[i].ToolSpecification.Description
 		tools[i].ToolSpecification.Description = truncateDescByRatio(desc, ratio)
 	}
-
-	final := estimateToolsBytes(tools)
-	logger.Infof("[ToolCompress] %d tools compressed (schema + description): %d -> %d -> %d bytes (threshold %d)",
-		len(tools), total, afterSchema, final, threshold)
 	return tools
 }
 

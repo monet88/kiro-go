@@ -90,12 +90,11 @@ func TestCompressToolsSchemaSimplificationBringsUnderThreshold(t *testing.T) {
 		if _, ok := pm["description"]; ok {
 			t.Fatalf("prop %s description must be stripped", name)
 		}
-		if _, ok := pm["enum"]; ok {
-			t.Fatalf("prop %s enum must be stripped", name)
-		}
 		if _, ok := pm["examples"]; ok {
 			t.Fatalf("prop %s examples must be stripped", name)
 		}
+		// enum is a kept constraint (see TestSimplifyToolSchemaPreservesConstraints);
+		// this fixture intentionally has none, so no enum assertion here.
 	}
 }
 
