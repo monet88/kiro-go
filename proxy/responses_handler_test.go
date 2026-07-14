@@ -281,7 +281,7 @@ func setupResponsesTestHandler(t *testing.T) (*Handler, func()) {
 	p.Reload()
 	h := &Handler{
 		pool:        p,
-		promptCache: newPromptCacheTracker(defaultPromptCacheTTL),
+		promptCache: newPromptCacheTracker(defaultPromptCacheTTL, 0, 0),
 	}
 	cleanup := func() {}
 	return h, cleanup

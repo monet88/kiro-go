@@ -43,7 +43,7 @@ func newBodyLimitHandler(t *testing.T) *Handler {
 	}
 	p := accountpool.GetPool()
 	p.Reload()
-	return &Handler{pool: p, promptCache: newPromptCacheTracker(defaultPromptCacheTTL)}
+	return &Handler{pool: p, promptCache: newPromptCacheTracker(defaultPromptCacheTTL, 0, 0)}
 }
 
 // TestPublicEndpointsRejectOversizedBodyWith413 verifies that a request body

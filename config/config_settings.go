@@ -399,6 +399,77 @@ func UpdateServerIdleTimeout(seconds int) error {
 	return Save()
 }
 
+// DefaultPromptCacheMaxEntries is the default in-memory Cross-account Prompt
+// Cache LRU bound (ADR-0001): the maximum number of distinct Cache Fingerprints
+// held across all Accounts before the least-recently-used entry is evicted.
+const DefaultPromptCacheMaxEntries = 131072
+
+// minPromptCacheMaxEntries is the floor applied to a misconfigured (too small)
+// PromptCacheMaxEntries so multi-turn prefixes are not evicted immediately.
+const minPromptCacheMaxEntries = 1024
+
+// DefaultPromptCacheMaxRatio caps reported cache-read tokens at 85% of total
+// input tokens so the newest turn is never reported as fully cache-served.
+const DefaultPromptCacheMaxRatio = 0.85
+
+// GetPromptCacheMaxEntries returns the configured in-memory Prompt Cache LRU
+// bound, falling back to DefaultPromptCacheMaxEntries when unset and raising
+// too-small values to the minimum floor.
+func GetPromptCacheMaxEntries() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.PromptCacheMaxEntries <= 0 {
+		return DefaultPromptCacheMaxEntries
+	}
+	if cfg.PromptCacheMaxEntries < minPromptCacheMaxEntries {
+		return minPromptCacheMaxEntries
+	}
+	return cfg.PromptCacheMaxEntries
+}
+
+// GetPromptCacheMaxRatio returns the configured cache-read ratio cap, falling
+// back to DefaultPromptCacheMaxRatio when unset or out of the (0,1] range. The
+// negated-range test also rejects NaN (every comparison with NaN is false).
+func GetPromptCacheMaxRatio() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || !(cfg.PromptCacheMaxRatio > 0 && cfg.PromptCacheMaxRatio <= 1) {
+		return DefaultPromptCacheMaxRatio
+	}
+	return cfg.PromptCacheMaxRatio
+}
+
+// UpdatePromptCacheMaxEntries updates the in-memory Prompt Cache LRU bound and
+// persists the change. Non-positive values reset to the default; values below
+// the minimum floor are raised to the floor.
+func UpdatePromptCacheMaxEntries(entries int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	switch {
+	case entries <= 0:
+		cfg.PromptCacheMaxEntries = DefaultPromptCacheMaxEntries
+	case entries < minPromptCacheMaxEntries:
+		cfg.PromptCacheMaxEntries = minPromptCacheMaxEntries
+	default:
+		cfg.PromptCacheMaxEntries = entries
+	}
+	return Save()
+}
+
+// UpdatePromptCacheMaxRatio updates the cache-read ratio cap and persists the
+// change. Out-of-range values (including NaN) reset to the default; the
+// negated-range test rejects NaN since every NaN comparison is false.
+func UpdatePromptCacheMaxRatio(ratio float64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if ratio > 0 && ratio <= 1 {
+		cfg.PromptCacheMaxRatio = ratio
+	} else {
+		cfg.PromptCacheMaxRatio = DefaultPromptCacheMaxRatio
+	}
+	return Save()
+}
+
 func GetKiroClientConfig() KiroClientConfig {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()

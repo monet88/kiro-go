@@ -44,7 +44,7 @@ func newStreamOnlyHandler(t *testing.T) *Handler {
 	}
 	p := accountpool.GetPool()
 	p.Reload()
-	return &Handler{pool: p, promptCache: newPromptCacheTracker(defaultPromptCacheTTL)}
+	return &Handler{pool: p, promptCache: newPromptCacheTracker(defaultPromptCacheTTL, 0, 0)}
 }
 
 func streamOnlyRequest(path, key string, stream bool) *http.Request {

@@ -192,6 +192,19 @@ type Config struct {
 	// RoutingConcurrency controls sticky routing, per-account limits and global queueing.
 	RoutingConcurrency RoutingConcurrencyConfig `json:"routingConcurrency,omitempty"`
 
+	// PromptCacheMaxEntries bounds the in-memory Cross-account Prompt Cache LRU
+	// (ADR-0001): the maximum number of distinct Cache Fingerprints held in
+	// memory across all Accounts. 0 or negative selects the built-in default
+	// (see GetPromptCacheMaxEntries); values below the minimum floor are raised
+	// to the floor to avoid a pathologically tiny cache under misconfiguration.
+	PromptCacheMaxEntries int `json:"promptCacheMaxEntries,omitempty"`
+
+	// PromptCacheMaxRatio caps reported cache-read tokens as a fraction of a
+	// request's total input tokens, keeping cache-hit estimates realistic (the
+	// newest content is never fully served from cache on the current turn).
+	// 0/negative or >1 selects the built-in default (see GetPromptCacheMaxRatio).
+	PromptCacheMaxRatio float64 `json:"promptCacheMaxRatio,omitempty"`
+
 	// MaxRequestBodyMB caps inbound request body size (in MiB) on the public
 	// inference endpoints (messages / count_tokens / chat completions / responses).
 	// Bodies are read with io.ReadAll, so an unbounded size lets a single oversized

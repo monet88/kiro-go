@@ -74,7 +74,7 @@ func NewHandler() *Handler {
 		startTime:       time.Now().Unix(),
 		stopRefresh:     make(chan struct{}),
 		stopStatsSaver:  make(chan struct{}),
-		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
+		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL, 0, 0),
 		kamImports:      newKamImportManager(),
 	}
 	// 启动后台刷新
