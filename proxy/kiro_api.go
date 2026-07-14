@@ -86,23 +86,29 @@ func regionalizeURLForRegion(rawURL, region string) string {
 	).Replace(rawURL)
 }
 
-// defaultKiroProfileRegions is the ordered set of regions probed when an account's
-// home region is unknown. us-east-1 is the historical default every login falls
-// back to; eu-central-1 is where EU-provisioned Azure-tenant profiles
-// (e.g. KiroProfile-eu-central-1) live. Override or extend with the
+// defaultKiroProfileRegions is the ordered set of data-plane regions probed when
+// looking up a Kiro profile. us-east-1 is where most Q/Kiro profiles live;
+// eu-central-1 is common for EU-provisioned Azure-tenant profiles
+// (e.g. KiroProfile-eu-central-1). Override or extend with the
 // KIRO_PROFILE_REGIONS env var (comma-separated) to onboard further regions
 // without a code change.
+//
+// Note: account.Region is the OIDC/SSO *auth* region (often parsed from the
+// Identity Center Start URL, e.g. portal.eu-north-1.app.aws → eu-north-1). That
+// region is required for token refresh (oidc.{region}.amazonaws.com) but is NOT
+// always a valid Amazon Q host (q.eu-north-1.amazonaws.com often does not exist).
+// Profile discovery therefore always falls through to these defaults after the
+// account region; the cached profile ARN then drives the data-plane region via
+// kiroRegionForProfile.
 var defaultKiroProfileRegions = []string{"us-east-1", "eu-central-1"}
 
 // kiroProfileRegionCandidates returns the ordered, de-duplicated list of regions
-// to probe for an account's Kiro profile. The account's currently-configured region
-// is always tried first. Cross-region fallbacks are only added when the home region
-// is genuinely unknown — an external_idp (Azure-tenant) login, which defaults to
-// us-east-1, or an account with no region at all. An idc/social/Builder ID account
-// already carries its real region (from the SSO portal / the us-east-1 default), so
-// it is probed against that single region exactly as before — no extra upstream calls
-// and no chance of its established region being flipped. KIRO_PROFILE_REGIONS, when
-// set, replaces the built-in fallback set (the account region is still tried first).
+// to probe for an account's Kiro profile. The account's currently-configured
+// auth region is always tried first (cheap when it is also the profile home).
+// Built-in / env fallbacks always follow so IDC portal regions that are not Q
+// data-plane regions still discover profiles (typical case: portal eu-north-1,
+// profile us-east-1). KIRO_PROFILE_REGIONS, when set, replaces the built-in
+// fallback set (the account region is still tried first).
 func kiroProfileRegionCandidates(account *config.Account) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -118,9 +124,6 @@ func kiroProfileRegionCandidates(account *config.Account) []string {
 	if account != nil {
 		add(account.Region)
 	}
-	if !shouldProbeFallbackRegions(account) {
-		return out
-	}
 	if env := strings.TrimSpace(os.Getenv("KIRO_PROFILE_REGIONS")); env != "" {
 		for _, r := range strings.Split(env, ",") {
 			add(r)
@@ -131,20 +134,6 @@ func kiroProfileRegionCandidates(account *config.Account) []string {
 		add(r)
 	}
 	return out
-}
-
-// shouldProbeFallbackRegions reports whether an account's home region is unknown
-// enough to justify probing fallback regions. Only external_idp accounts (region
-// defaulted to us-east-1 at login) and accounts with no region set qualify; every
-// other auth method already carries its authoritative region.
-func shouldProbeFallbackRegions(account *config.Account) bool {
-	if account == nil {
-		return true
-	}
-	if strings.TrimSpace(account.Region) == "" {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(account.AuthMethod), "external_idp")
 }
 
 // GetUsageLimits 获取账户使用量和订阅信息
@@ -267,12 +256,12 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 
 	if !profileLookupSuppressed {
 		// Probe ListAvailableProfiles across candidate regions, retrying transient
-		// failures. The home region is unknown at login for Azure-tenant
-		// (external_idp) accounts (they default to us-east-1), so the probe is what
-		// discovers a profile that lives outside the account's configured region. The
-		// cached ARN then drives the data-plane region via kiroRegionForProfile — no
-		// separate region persistence is needed (and account.Region stays the auth
-		// region, which can legitimately differ from the profile's region).
+		// failures. account.Region is the OIDC/SSO auth region (Start URL / portal)
+		// and often differs from the Kiro profile's data-plane region — e.g. IAM
+		// Identity Center portals in eu-north-1 with Q profiles in us-east-1.
+		// Cross-region probing discovers the profile; the cached ARN then drives
+		// data-plane calls via kiroRegionForProfile while account.Region stays the
+		// auth region for token refresh.
 		profileArn, err := resolveProfileArnAcrossRegions(account)
 		if err == nil && profileArn != "" {
 			if updateErr := config.UpdateAccountProfileArn(account.ID, profileArn); updateErr != nil {
