@@ -77,6 +77,17 @@ func NewHandler() *Handler {
 		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL, 0, 0),
 		kamImports:      newKamImportManager(),
 	}
+	// Load the Prompt Cache Snapshot so cross-account cache prefixes survive a
+	// process restart, then start the periodic atomic flush loop. Durability
+	// comes from the periodic flush; the saver also flushes once if
+	// stopStatsSaver is ever closed (matching the existing stats/metrics saver
+	// lifecycle), but the current server has no graceful-shutdown path that
+	// closes it, so restarts rely on the last periodic flush.
+	snapshotPath := promptCacheSnapshotPath()
+	if err := h.promptCache.LoadSnapshot(snapshotPath); err != nil {
+		logger.Warnf("failed to load prompt cache snapshot: %v", err)
+	}
+	go h.promptCache.startSnapshotSaver(snapshotPath, h.stopStatsSaver)
 	// 启动后台刷新
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)

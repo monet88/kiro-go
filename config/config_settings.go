@@ -470,6 +470,50 @@ func UpdatePromptCacheMaxRatio(ratio float64) error {
 	return Save()
 }
 
+// DefaultMaxPayloadBytes is the default upper bound for the serialized Kiro
+// request body. It replaces the old hard ~900KiB cap: operators can raise it via
+// MaxPayloadBytes so large multimodal/long-context requests are not truncated
+// before reaching upstream. Kiro rejects oversized requests with HTTP 400
+// (CONTENT_LENGTH_EXCEEDS_THRESHOLD), so the effective ceiling is still bounded
+// by upstream; this knob only controls the local truncation trigger.
+const DefaultMaxPayloadBytes = 2_000_000
+
+// minMaxPayloadBytes is a sanity floor so a misconfigured tiny value cannot
+// truncate essentially every request down to the fallback placeholder.
+const minMaxPayloadBytes = 64 * 1024
+
+// GetMaxPayloadBytes returns the configured serialized request-body cap used by
+// the local truncation pass, falling back to DefaultMaxPayloadBytes when unset
+// and raising too-small values to the minimum floor.
+func GetMaxPayloadBytes() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.MaxPayloadBytes <= 0 {
+		return DefaultMaxPayloadBytes
+	}
+	if cfg.MaxPayloadBytes < minMaxPayloadBytes {
+		return minMaxPayloadBytes
+	}
+	return cfg.MaxPayloadBytes
+}
+
+// UpdateMaxPayloadBytes updates the serialized request-body cap and persists the
+// change. Non-positive values reset to the default; values below the minimum
+// floor are raised to the floor.
+func UpdateMaxPayloadBytes(bytes int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	switch {
+	case bytes <= 0:
+		cfg.MaxPayloadBytes = DefaultMaxPayloadBytes
+	case bytes < minMaxPayloadBytes:
+		cfg.MaxPayloadBytes = minMaxPayloadBytes
+	default:
+		cfg.MaxPayloadBytes = bytes
+	}
+	return Save()
+}
+
 func GetKiroClientConfig() KiroClientConfig {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()

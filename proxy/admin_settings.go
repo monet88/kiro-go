@@ -34,6 +34,9 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"balanceMode":             config.GetBalanceMode(),
 		"routingConcurrency":      config.GetRoutingConcurrencyConfig(),
 		"routingConcurrencyStats": h.pool.RoutingStats(),
+		"maxPayloadBytes":         config.GetMaxPayloadBytes(),
+		"promptCacheMaxEntries":   config.GetPromptCacheMaxEntries(),
+		"promptCacheMaxRatio":     config.GetPromptCacheMaxRatio(),
 	})
 }
 
@@ -82,14 +85,17 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey                    *string                          `json:"apiKey,omitempty"`
-		RequireApiKey             *bool                            `json:"requireApiKey,omitempty"`
-		Password                  string                           `json:"password,omitempty"`
-		AllowOverUsage            *bool                            `json:"allowOverUsage,omitempty"`
-		BalanceMode               *string                          `json:"balanceMode,omitempty"`
-		RoutingConcurrency        *config.RoutingConcurrencyConfig `json:"routingConcurrency,omitempty"`
-		ServerReadTimeoutSeconds  *int                             `json:"serverReadTimeoutSeconds,omitempty"`
-		ServerIdleTimeoutSeconds  *int                             `json:"serverIdleTimeoutSeconds,omitempty"`
+		ApiKey                   *string                          `json:"apiKey,omitempty"`
+		RequireApiKey            *bool                            `json:"requireApiKey,omitempty"`
+		Password                 string                           `json:"password,omitempty"`
+		AllowOverUsage           *bool                            `json:"allowOverUsage,omitempty"`
+		BalanceMode              *string                          `json:"balanceMode,omitempty"`
+		RoutingConcurrency       *config.RoutingConcurrencyConfig `json:"routingConcurrency,omitempty"`
+		ServerReadTimeoutSeconds *int                             `json:"serverReadTimeoutSeconds,omitempty"`
+		ServerIdleTimeoutSeconds *int                             `json:"serverIdleTimeoutSeconds,omitempty"`
+		MaxPayloadBytes          *int                             `json:"maxPayloadBytes,omitempty"`
+		PromptCacheMaxEntries    *int                             `json:"promptCacheMaxEntries,omitempty"`
+		PromptCacheMaxRatio      *float64                         `json:"promptCacheMaxRatio,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -139,6 +145,32 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ServerIdleTimeoutSeconds != nil {
 		if err := config.UpdateServerIdleTimeout(*req.ServerIdleTimeoutSeconds); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	// Prompt Cache knobs (ticket #5). MaxPayloadBytes takes effect on the next
+	// request (the truncation pass reads it per call); the cache LRU bound and
+	// ratio are read by the tracker at construction, so changes to those apply
+	// fully only after a restart — the persisted value is authoritative.
+	if req.MaxPayloadBytes != nil {
+		if err := config.UpdateMaxPayloadBytes(*req.MaxPayloadBytes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.PromptCacheMaxEntries != nil {
+		if err := config.UpdatePromptCacheMaxEntries(*req.PromptCacheMaxEntries); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.PromptCacheMaxRatio != nil {
+		if err := config.UpdatePromptCacheMaxRatio(*req.PromptCacheMaxRatio); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

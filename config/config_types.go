@@ -212,6 +212,14 @@ type Config struct {
 	// 0 or negative means use the built-in default (see GetMaxRequestBodyBytes).
 	MaxRequestBodyMB int `json:"maxRequestBodyMB,omitempty"`
 
+	// MaxPayloadBytes is the upper bound (in bytes) for the serialized Kiro
+	// request body after translation. When a converted payload exceeds this
+	// size, older conversation history is dropped (with a placeholder note) so
+	// the request fits under Kiro's upstream input limit. Operators can raise it
+	// above the conservative built-in default when the upstream tolerates larger
+	// bodies. 0 or negative selects the built-in default (see GetMaxPayloadBytes).
+	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
+
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
 	//         "http://host:port",  "http://user:pass@host:port"
