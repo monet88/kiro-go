@@ -159,3 +159,47 @@ func TestPromptCacheSnapshotAtomicNoPartial(t *testing.T) {
 		}
 	}
 }
+
+// TestPromptCacheSnapshotSaverFinalFlush verifies that closing the stop channel
+// makes startSnapshotSaver write one final snapshot before it returns, so a
+// graceful shutdown persists the latest cache state without waiting for the next
+// periodic tick.
+func TestPromptCacheSnapshotSaverFinalFlush(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prompt_cache.json")
+	tracker := newPromptCacheTracker(time.Hour, 0, 0)
+	profile := tracker.BuildClaudeProfile(buildLongCacheReq("final-flush"), 2048)
+	if profile == nil {
+		t.Fatalf("expected cache profile")
+	}
+	tracker.Update("acct-1", profile)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tracker.startSnapshotSaver(path, stop)
+	}()
+
+	// No snapshot exists yet (periodic interval is 60s, far longer than this test).
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected no snapshot before stop, stat err = %v", err)
+	}
+
+	// Trigger the final flush and wait for the saver goroutine to return.
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("saver goroutine did not return after stop close")
+	}
+
+	// The final flush must have written a loadable snapshot with the entry.
+	reader := newPromptCacheTracker(time.Hour, 0, 0)
+	if err := reader.LoadSnapshot(path); err != nil {
+		t.Fatalf("load final-flush snapshot: %v", err)
+	}
+	warm := reader.Compute("acct-2", profile)
+	if warm.CacheReadInputTokens <= 0 {
+		t.Fatalf("expected final flush to persist entry, got %+v", warm)
+	}
+}

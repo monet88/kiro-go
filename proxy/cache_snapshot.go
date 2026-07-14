@@ -80,6 +80,12 @@ func (t *promptCacheTracker) FlushSnapshot(path string) error {
 		return nil
 	}
 
+	// Serialize disk writes: two concurrent flushers would otherwise race on the
+	// shared "<path>.tmp" file. Held for the whole snapshot+write so the on-disk
+	// file always reflects a single coherent export.
+	t.flushMu.Lock()
+	defer t.flushMu.Unlock()
+
 	now := time.Now()
 	t.mu.Lock()
 	t.pruneExpiredLocked(now)
@@ -143,7 +149,6 @@ func (t *promptCacheTracker) LoadSnapshot(path string) error {
 	loaded := 0
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	// Insert in reverse so the first (most-recently-used) snapshot entry ends up
 	// at the front of the LRU after all PushFront calls.
 	for i := len(snap.Entries) - 1; i >= 0; i-- {
@@ -171,7 +176,10 @@ func (t *promptCacheTracker) LoadSnapshot(path string) error {
 		loaded++
 	}
 	t.evictOverflowLocked()
+	t.mu.Unlock()
 
+	// Log outside the lock so a large snapshot load does not extend mutex hold
+	// time (Compute/Update contend on the same lock).
 	if loaded > 0 {
 		logger.Infof("prompt cache snapshot loaded %d live entries from %s", loaded, path)
 	}
@@ -179,9 +187,10 @@ func (t *promptCacheTracker) LoadSnapshot(path string) error {
 }
 
 // startSnapshotSaver periodically flushes the Prompt Cache Snapshot until stop
-// is closed. If stop is closed it performs one final flush before returning;
-// note the current server keeps stop open for the process lifetime, so in
-// practice durability comes from the periodic flush. Run in its own goroutine.
+// is closed. When stop is closed (by Handler.Shutdown on SIGINT/SIGTERM) it
+// performs one final flush before returning so the latest cache state is
+// persisted on a graceful stop; between stops, durability comes from the
+// periodic flush. Run in its own goroutine.
 func (t *promptCacheTracker) startSnapshotSaver(path string, stop <-chan struct{}) {
 	if t == nil || path == "" {
 		return

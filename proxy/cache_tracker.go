@@ -75,6 +75,11 @@ type promptCacheTracker struct {
 	maxEntries      int
 	maxRatio        float64
 	maxSupportedTTL time.Duration
+	// flushMu serializes FlushSnapshot so two concurrent flushers (the periodic
+	// saver and, e.g., a shutdown-triggered final flush) never race on the same
+	// temp file. It is separate from mu: the snapshot copy is taken under mu,
+	// but the disk write is guarded by flushMu so it does not block Compute/Update.
+	flushMu sync.Mutex
 }
 
 // newPromptCacheTracker constructs the Cross-account Prompt Cache. maxEntries
