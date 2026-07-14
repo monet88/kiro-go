@@ -60,9 +60,10 @@ func regionalizeURL(rawURL string, account *config.Account) string {
 }
 
 // regionalizeURLForProfile points a hardcoded us-east-1 Kiro endpoint at the
-// data-plane region derived from the profile (payload ARN first, then the account's
-// cached ARN, then account.Region). account.Region is the auth/OIDC region and can
-// differ from the profile's region, so the profile ARN is preferred.
+// data-plane region derived from the profile only: payload profileArn first, then
+// the account's cached ProfileArn. It never rewrites from account.Region (that is
+// the OIDC/SSO portal/auth region and can be a hostless portal region such as
+// eu-north-1). Missing both ARNs keeps the default us-east-1 endpoint unchanged.
 func regionalizeURLForProfile(rawURL string, account *config.Account, profileArn string) string {
 	return regionalizeURLForRegion(rawURL, kiroRegionForProfile(account, profileArn))
 }

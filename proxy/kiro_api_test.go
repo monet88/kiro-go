@@ -55,6 +55,32 @@ func TestKiroRegionForProfileIgnoresAuthRegionWithoutProfile(t *testing.T) {
 	}
 }
 
+func TestKiroRegionForProfilePrefersProfileOverPortalRegion(t *testing.T) {
+	// Portal/auth region must never win over a real profile data-plane region.
+	account := &config.Account{
+		AuthMethod: "idc",
+		Region:     "eu-north-1",
+		ProfileArn: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/home",
+	}
+	if got := kiroRegionForProfile(account, ""); got != "eu-central-1" {
+		t.Fatalf("expected cached profile region, got %q", got)
+	}
+	// Explicit payload ARN overrides both portal region and cached account ARN.
+	if got := kiroRegionForProfile(account, "arn:aws:codewhisperer:us-west-2:123456789012:profile/payload"); got != "us-west-2" {
+		t.Fatalf("expected payload profile region, got %q", got)
+	}
+
+	gotURL := regionalizeURLForProfile(
+		"https://q.us-east-1.amazonaws.com/generateAssistantResponse",
+		account,
+		"",
+	)
+	wantURL := "https://q.eu-central-1.amazonaws.com/generateAssistantResponse"
+	if gotURL != wantURL {
+		t.Fatalf("expected data-plane rewrite from profile ARN, got %q want %q", gotURL, wantURL)
+	}
+}
+
 func TestRegionalizeURLForProfileUsesPayloadProfileArnRegion(t *testing.T) {
 	account := &config.Account{Region: "ap-southeast-1"}
 
