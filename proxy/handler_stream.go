@@ -20,12 +20,12 @@ type streamSSE struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
 
-	mu            sync.Mutex
-	lastWriteNano int64
-	stopped       bool
-	committed     bool // true after any body write (real event or keepalive)
-	done          chan struct{}
-	stopOnce      sync.Once
+	mu        sync.Mutex
+	lastWrite time.Time
+	stopped   bool
+	committed bool // true after any body write (real event or keepalive)
+	done      chan struct{}
+	stopOnce  sync.Once
 }
 
 // startStreamSSE wraps w/flusher with a keepalive ticker. Callers must route
@@ -35,10 +35,10 @@ type streamSSE struct {
 // may already have flushed the 200 SSE body.
 func startStreamSSE(w http.ResponseWriter, flusher http.Flusher) *streamSSE {
 	s := &streamSSE{
-		w:             w,
-		flusher:       flusher,
-		lastWriteNano: time.Now().UnixNano(),
-		done:          make(chan struct{}),
+		w:         w,
+		flusher:   flusher,
+		lastWrite: time.Now(),
+		done:      make(chan struct{}),
 	}
 	go s.keepaliveLoop()
 	return s
@@ -53,11 +53,11 @@ func (s *streamSSE) keepaliveLoop() {
 			return
 		case <-ticker.C:
 			s.mu.Lock()
-			if !s.stopped && time.Since(time.Unix(0, s.lastWriteNano)) >= streamKeepaliveInterval {
+			if !s.stopped && time.Since(s.lastWrite) >= streamKeepaliveInterval {
 				fmt.Fprint(s.w, ": keepalive\n\n")
 				s.flusher.Flush()
 				s.committed = true
-				s.lastWriteNano = time.Now().UnixNano()
+				s.lastWrite = time.Now()
 			}
 			s.mu.Unlock()
 		}
@@ -89,7 +89,7 @@ func (s *streamSSE) WriteRaw(payload string) {
 	fmt.Fprint(s.w, payload)
 	s.flusher.Flush()
 	s.committed = true
-	s.lastWriteNano = time.Now().UnixNano()
+	s.lastWrite = time.Now()
 	s.mu.Unlock()
 }
 
