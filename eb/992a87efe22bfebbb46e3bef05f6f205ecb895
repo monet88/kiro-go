@@ -1,0 +1,26 @@
+proxy/translator_truncate.go
+  s_c6e51357c0cd62::t_8cdcecdd15b8eb 5-6,159-166
+proxy/cache_snapshot.go
+  s_c6e51357c0cd62::t_5906078d4f4df0 152-160,163-164
+proxy/translator_truncate_test.go
+  s_c6e51357c0cd62::t_c08daa461ed033 94-124
+proxy/cache_snapshot_test.go
+  s_c6e51357c0cd62::t_ef845c9312ac20 4
+  s_c6e51357c0cd62::t_545cbe45b901f8 207-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "eb992a87efe22bfebbb46e3bef05f6f205ecb895",
+  "prompts": {},
+  "sessions": {
+    "s_c6e51357c0cd62": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "4335ee01-4070-4c80-ad87-16ae8a79c258",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
