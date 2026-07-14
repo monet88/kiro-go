@@ -1,0 +1,21 @@
+.github/workflows/release.yml
+  s_b796aef1e7df4b::t_a31c5c5f33bbe4 1-156
+config/config_types.go
+  s_b796aef1e7df4b::t_8227892e2d3aca 280-282
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "923604a4aafab4f4b690edcb29df3ce9b81694b8",
+  "prompts": {},
+  "sessions": {
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
