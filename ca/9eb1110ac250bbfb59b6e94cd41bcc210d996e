@@ -1,0 +1,24 @@
+proxy/tool_compression_test.go
+  s_c6e51357c0cd62::t_09341548fdab3b 42,60,106,129
+  s_c6e51357c0cd62::t_8715606cc998be 169,181,187
+  s_c6e51357c0cd62::t_bcb5d123122059 308-412
+proxy/tool_compression.go
+  s_c6e51357c0cd62::t_8ba21b07fb355e 159-161,166-177,204-206,208-210,212-215,217-224,226-228,231-241,246-254
+  s_c6e51357c0cd62::t_0b749f2c0174c1 8,54-85,87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "ca9eb1110ac250bbfb59b6e94cd41bcc210d996e",
+  "prompts": {},
+  "sessions": {
+    "s_c6e51357c0cd62": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "4335ee01-4070-4c80-ad87-16ae8a79c258",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
