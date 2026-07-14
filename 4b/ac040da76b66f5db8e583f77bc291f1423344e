@@ -1,0 +1,28 @@
+config/apikeys.go
+  s_bf3aaff4a14954::t_26c5a1525abf8b 218
+config/apikeys_test.go
+  s_bf3aaff4a14954::t_19b5cbb54ad7cb 278-280
+  s_bf3aaff4a14954::t_615f65589dcf4d 281
+config/apikey_account_test.go
+  s_bf3aaff4a14954::t_19b5cbb54ad7cb 105-116,118-123,126-135
+  s_bf3aaff4a14954::t_65bb104507ae8a 117,124-125
+config/config_accounts.go
+  s_bf3aaff4a14954::t_7077f087307436 132
+  s_bf3aaff4a14954::t_26c5a1525abf8b 118-121,129-131,133-144,147-148,153-155,159,163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "4bac040da76b66f5db8e583f77bc291f1423344e",
+  "prompts": {},
+  "sessions": {
+    "s_bf3aaff4a14954": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d7471357-460b-4509-b12f-651ef5f1ca35",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
