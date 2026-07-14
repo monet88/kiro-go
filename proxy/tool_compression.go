@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"kiro-go/logger"
@@ -50,10 +51,40 @@ func resolveToolsSizeThreshold() int {
 	return n
 }
 
-// compressToolsIfNeeded resolves the operator threshold (env) and logs when a
-// compression pass actually shrinks the tool list. Algorithm lives in compressTools.
+// toolsSizeThresholdCache memoizes the resolved threshold so the per-request hot
+// path (compressToolsIfNeeded on every tool-bearing request) does not call
+// os.Getenv each time — Go's environment lookup takes a global lock and would
+// serialize under high concurrency. Sentinel -1 means "not yet resolved";
+// concurrent resolves are harmless since they compute the same value.
+var toolsSizeThresholdCache atomic.Int64
+
+func init() {
+	toolsSizeThresholdCache.Store(-1)
+}
+
+// cachedToolsSizeThreshold returns the memoized threshold, resolving the env at
+// most once. Tests that change the env var call resetToolsSizeThresholdCache so
+// the next lookup re-reads it.
+func cachedToolsSizeThreshold() int {
+	if v := toolsSizeThresholdCache.Load(); v >= 0 {
+		return int(v)
+	}
+	resolved := resolveToolsSizeThreshold()
+	toolsSizeThresholdCache.Store(int64(resolved))
+	return resolved
+}
+
+// resetToolsSizeThresholdCache clears the memoized threshold so the next lookup
+// re-reads KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES. Intended for tests that mutate
+// the env var via t.Setenv.
+func resetToolsSizeThresholdCache() {
+	toolsSizeThresholdCache.Store(-1)
+}
+
+// compressToolsIfNeeded resolves the operator threshold (memoized) and logs when
+// a compression pass actually shrinks the tool list. Algorithm lives in compressTools.
 func compressToolsIfNeeded(tools []KiroToolWrapper) []KiroToolWrapper {
-	threshold := resolveToolsSizeThreshold()
+	threshold := cachedToolsSizeThreshold()
 	if threshold <= 0 || len(tools) == 0 {
 		return tools
 	}
@@ -125,21 +156,30 @@ func estimateToolsBytes(tools []KiroToolWrapper) int {
 // ratio = threshold / afterSchemaBytes 是按字节算出的，故 target 也按字节算（而非乘
 // rune 数），口径自洽——否则对 CJK 这类多字节文本会把字节比误当字符比，导致过度截断。
 // 取到目标字节数后回退到不超过它的最近 UTF-8 字符边界，保证不切坏多字节字符。
+//
+// 为避免对大描述反复分配 []rune，用 range 一次遍历定位第 minToolDescChars 个 rune 的
+// 字节下标（minBytes），同时得到总 rune 数（runeCount）。
 func truncateDescByRatio(desc string, ratio float64) string {
 	if ratio >= 1 {
 		return desc
 	}
-	if len([]rune(desc)) <= minToolDescChars {
+
+	// 一次遍历：定位第 minToolDescChars 个 rune 的字节下标，并统计总 rune 数。
+	runeCount := 0
+	minBytes := len(desc)
+	for byteIdx := range desc {
+		if runeCount == minToolDescChars {
+			minBytes = byteIdx
+		}
+		runeCount++
+	}
+	// rune 数不超过保底值 → 不截断。
+	if runeCount <= minToolDescChars {
 		return desc
 	}
 
 	targetBytes := int(float64(len(desc)) * ratio)
-
 	// 保底：至少保留 minToolDescChars 个字符对应的字节数。
-	minBytes := len(desc)
-	if r := []rune(desc); len(r) > minToolDescChars {
-		minBytes = len(string(r[:minToolDescChars]))
-	}
 	if targetBytes < minBytes {
 		targetBytes = minBytes
 	}
@@ -161,42 +201,57 @@ func truncateDescByRatio(desc string, ratio float64) string {
 //   - 移除：description、examples、default、title、$comment 等纯说明性字段（体积大头，
 //     对模型选参非必需）。
 //
-// 仅处理 map[string]interface{} 形态的 schema（ensureObjectSchema 已保证顶层为该形态）；
-// 其他形态原样返回。注意：本函数返回新 map，不修改入参。
+// 处理 map[string]interface{}（对象 schema）与 []interface{}（如 tuple 校验里
+// items 为 schema 数组）两种形态；其他标量形态原样返回。注意：本函数返回新值，
+// 不修改入参。
 func simplifyToolSchema(schema interface{}) interface{} {
-	m, ok := schema.(map[string]interface{})
-	if !ok {
+	switch val := schema.(type) {
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+
+		// 保留顶层结构 / 约束字段（剔除 additionalProperties——cleanSchema 已要求移除它）。
+		// $ref / anyOf / oneOf / allOf 在缺 type 时是该节点唯一的语义来源，必须保留，否则
+		// 节点会塌成 {} 让模型与上游都无法理解。
+		copySchemaKeptKeys(val, result)
+
+		// properties：递归简化每个属性。
+		if props, ok := val["properties"].(map[string]interface{}); ok {
+			simplified := make(map[string]interface{}, len(props))
+			for name, prop := range props {
+				simplified[name] = simplifyToolSchema(prop)
+			}
+			result["properties"] = simplified
+		}
+
+		// items（数组元素 schema）：递归简化（可能是单个 schema 或 schema 数组）。
+		if items, exists := val["items"]; exists {
+			result["items"] = simplifyToolSchema(items)
+		}
+
+		return result
+	case []interface{}:
+		// tuple 校验（items 为 schema 数组）等情形：逐元素递归简化，避免整段原样透传
+		// 导致嵌套说明性字段没被剥掉。
+		simplified := make([]interface{}, len(val))
+		for i, item := range val {
+			simplified[i] = simplifyToolSchema(item)
+		}
+		return simplified
+	default:
 		return schema
 	}
-
-	result := make(map[string]interface{})
-
-	// 保留顶层结构 / 约束字段（剔除 additionalProperties——cleanSchema 已要求移除它）。
-	// $ref / anyOf / oneOf / allOf 在缺 type 时是该节点唯一的语义来源，必须保留，否则
-	// 节点会塌成 {} 让模型与上游都无法理解。
-	copySchemaKeptKeys(m, result)
-
-	// properties：递归简化每个属性。
-	if props, ok := m["properties"].(map[string]interface{}); ok {
-		simplified := make(map[string]interface{}, len(props))
-		for name, prop := range props {
-			simplified[name] = simplifyToolSchema(prop)
-		}
-		result["properties"] = simplified
-	}
-
-	// items（数组元素 schema）：递归简化（可能是单个 schema 或 schema 数组）。
-	if items, exists := m["items"]; exists {
-		result["items"] = simplifyToolSchema(items)
-	}
-
-	return result
 }
 
 // schemaKeptKeys 是简化时保留的非递归字段：结构（type/required）、选参约束（enum）、
-// 组合/引用（$ref/anyOf/oneOf/allOf）、以及 $schema。description/examples/default/title
-// 等说明性字段不在此列，会被剥除。
-var schemaKeptKeys = []string{"$schema", "type", "required", "enum", "$ref", "anyOf", "oneOf", "allOf"}
+// 组合/引用（$ref/anyOf/oneOf/allOf）、以及 $schema。此外保留常用校验约束
+// （pattern/长度/数值范围/数组约束等）——剥掉它们会让模型生成违反原 schema 的参数，
+// 导致工具执行失败。description/examples/default/title 等纯说明性字段不在此列，会被剥除。
+var schemaKeptKeys = []string{
+	"$schema", "type", "required", "enum", "$ref", "anyOf", "oneOf", "allOf",
+	"pattern", "minLength", "maxLength", "format",
+	"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+	"minItems", "maxItems", "uniqueItems",
+}
 
 // copySchemaKeptKeys 把 src 中 schemaKeptKeys 列出的字段拷到 dst。对 anyOf/oneOf/allOf
 // 这类「子 schema 数组」会递归简化其中每个元素。

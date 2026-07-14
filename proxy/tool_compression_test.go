@@ -39,6 +39,7 @@ func schemaWithDescriptions(propCount int, descPerProp string) map[string]interf
 
 func TestCompressToolsNoOpUnderThreshold(t *testing.T) {
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "")
+	resetToolsSizeThresholdCache()
 	tools := []KiroToolWrapper{
 		makeKiroTool("smallTool", "a short description", map[string]interface{}{
 			"type":       "object",
@@ -56,6 +57,7 @@ func TestCompressToolsNoOpUnderThreshold(t *testing.T) {
 func TestCompressToolsSchemaSimplificationBringsUnderThreshold(t *testing.T) {
 	// 阈值设小，让“简化 schema”这一步就足以达标，验证不会进入 description 截断。
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "2048")
+	resetToolsSizeThresholdCache()
 	desc := "keep me readable" // 短描述，简化 schema 后总量应已达标
 	tools := []KiroToolWrapper{
 		makeKiroTool("bigSchemaTool", desc, schemaWithDescriptions(40, strings.Repeat("verbose ", 20))),
@@ -101,6 +103,7 @@ func TestCompressToolsSchemaSimplificationBringsUnderThreshold(t *testing.T) {
 func TestCompressToolsTruncatesDescriptionWhenSchemaNotEnough(t *testing.T) {
 	// 阈值极小，简化 schema 仍不够 → 必须截断 description；验证保底字符数与 UTF-8 安全。
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "200")
+	resetToolsSizeThresholdCache()
 	longDesc := strings.Repeat("用途说明", 200) // 多字节字符，验证不切坏 rune
 	tools := []KiroToolWrapper{
 		makeKiroTool("toolWithLongDesc", longDesc, schemaWithDescriptions(10, "x")),
@@ -123,6 +126,7 @@ func TestCompressToolsTruncatesDescriptionWhenSchemaNotEnough(t *testing.T) {
 
 func TestCompressToolsDisabledByZeroThreshold(t *testing.T) {
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "0")
+	resetToolsSizeThresholdCache()
 	tools := []KiroToolWrapper{
 		makeKiroTool("bigTool", "d", schemaWithDescriptions(40, strings.Repeat("verbose ", 20))),
 	}
@@ -162,6 +166,7 @@ func TestResolveToolsSizeThreshold(t *testing.T) {
 // 不保证一定降到阈值内（工具数量本身极多时可能仍超），故这里断言“显著变小”而非“必达阈值”。
 func TestCompressToolsEndToEndViaConvertClaude(t *testing.T) {
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "2048")
+	resetToolsSizeThresholdCache()
 	claudeTools := make([]ClaudeTool, 0, 4)
 	for i := 0; i < 4; i++ {
 		claudeTools = append(claudeTools, ClaudeTool{
@@ -173,11 +178,13 @@ func TestCompressToolsEndToEndViaConvertClaude(t *testing.T) {
 
 	// 不经压缩时的体积（关掉压缩量一次基线）。
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "0")
+	resetToolsSizeThresholdCache()
 	rawWrappers, _ := convertClaudeTools(claudeTools)
 	rawBytes := estimateToolsBytes(rawWrappers)
 
 	// 开启压缩。
 	t.Setenv("KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES", "2048")
+	resetToolsSizeThresholdCache()
 	wrappers, _ := convertClaudeTools(claudeTools)
 	got := estimateToolsBytes(wrappers)
 
@@ -296,5 +303,110 @@ func TestTruncateDescByRatioCJKSafe(t *testing.T) {
 	// 保底字符数。
 	if len([]rune(got)) < minToolDescChars {
 		t.Fatalf("must keep at least %d chars, got %d", minToolDescChars, len([]rune(got)))
+	}
+}
+
+// TestSimplifyToolSchemaPreservesValidationKeywords 锁定 code review 高危回归：简化
+// schema 时必须保留 pattern / 长度 / 数值范围 / 数组约束等校验关键字——剥掉它们会让模型
+// 生成违反原 schema 的参数，导致工具执行失败。
+func TestSimplifyToolSchemaPreservesValidationKeywords(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"id"},
+		"properties": map[string]interface{}{
+			"id": map[string]interface{}{
+				"type":        "string",
+				"pattern":     "^[a-f0-9]{8}$",
+				"minLength":   float64(8),
+				"maxLength":   float64(8),
+				"format":      "uuid",
+				"description": "should be stripped",
+			},
+			"count": map[string]interface{}{
+				"type":       "integer",
+				"minimum":    float64(1),
+				"maximum":    float64(100),
+				"multipleOf": float64(2),
+			},
+			"tags": map[string]interface{}{
+				"type":        "array",
+				"minItems":    float64(1),
+				"maxItems":    float64(10),
+				"uniqueItems": true,
+			},
+		},
+	}
+
+	out := simplifyToolSchema(schema).(map[string]interface{})
+	props := out["properties"].(map[string]interface{})
+
+	id := props["id"].(map[string]interface{})
+	for _, k := range []string{"pattern", "minLength", "maxLength", "format"} {
+		if _, ok := id[k]; !ok {
+			t.Fatalf("validation keyword %q must be preserved on id", k)
+		}
+	}
+	if _, ok := id["description"]; ok {
+		t.Fatal("description must still be stripped alongside kept constraints")
+	}
+
+	count := props["count"].(map[string]interface{})
+	for _, k := range []string{"minimum", "maximum", "multipleOf"} {
+		if _, ok := count[k]; !ok {
+			t.Fatalf("numeric constraint %q must be preserved on count", k)
+		}
+	}
+
+	tags := props["tags"].(map[string]interface{})
+	for _, k := range []string{"minItems", "maxItems", "uniqueItems"} {
+		if _, ok := tags[k]; !ok {
+			t.Fatalf("array constraint %q must be preserved on tags", k)
+		}
+	}
+}
+
+// TestSimplifyToolSchemaRecursesIntoArrayItems 锁定 code review 高危回归：当 items 是
+// schema 数组（tuple 校验）时，必须逐元素递归简化，而不是整段原样透传把嵌套说明性字段
+// 留在里面。
+func TestSimplifyToolSchemaRecursesIntoArrayItems(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "array",
+		"items": []interface{}{
+			map[string]interface{}{
+				"type":        "string",
+				"enum":        []interface{}{"a", "b"},
+				"description": "drop me",
+			},
+			map[string]interface{}{
+				"type":        "integer",
+				"minimum":     float64(0),
+				"description": "drop me too",
+			},
+		},
+	}
+
+	out := simplifyToolSchema(schema).(map[string]interface{})
+	items, ok := out["items"].([]interface{})
+	if !ok || len(items) != 2 {
+		t.Fatalf("tuple items array must be preserved element-wise, got %v", out["items"])
+	}
+
+	first := items[0].(map[string]interface{})
+	if first["type"] != "string" {
+		t.Fatal("first tuple item type must survive")
+	}
+	if _, ok := first["enum"]; !ok {
+		t.Fatal("first tuple item enum constraint must survive")
+	}
+	if _, ok := first["description"]; ok {
+		t.Fatal("first tuple item description must be stripped (proves recursion, not pass-through)")
+	}
+
+	second := items[1].(map[string]interface{})
+	if _, ok := second["minimum"]; !ok {
+		t.Fatal("second tuple item minimum constraint must survive")
+	}
+	if _, ok := second["description"]; ok {
+		t.Fatal("second tuple item description must be stripped")
 	}
 }
