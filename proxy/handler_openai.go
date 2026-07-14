@@ -597,10 +597,10 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	recordRequestMetrics("openai", model, true, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 	logRetryExhausted("openai", model, statusCode, errType, lastErr)
 	if streamCommitted {
-		writeOpenAIStreamError(lastErr.Error())
+		writeOpenAIStreamError(improperlyFormedClientMessage(lastErr))
 		return
 	}
-	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), lastErr.Error())
+	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(lastErr))
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
@@ -711,7 +711,7 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
 	recordRequestMetrics("openai", model, false, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 	logRetryExhausted("openai", model, statusCode, errType, lastErr)
-	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), lastErr.Error())
+	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(lastErr))
 }
 
 func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, message string) {

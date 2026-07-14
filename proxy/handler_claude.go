@@ -726,18 +726,20 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "api_error")
 	recordRequestMetrics("claude", model, true, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 	logRetryExhausted("claude_stream", model, statusCode, errType, lastErr)
-	// If the stream already started (real events or keepalive), the status line
-	// cannot change; emit an error event and stop. Otherwise return the true
-	// status (e.g. 429 when the pool is drained) instead of a blanket 500.
+	// If the stream already started (real events or keepalive), the SSE
+	// headers/body are committed and the status line cannot change; emit an
+	// error event and stop. Otherwise return the true status (e.g. 429 when the
+	// pool is drained) instead of a blanket 500.
+	clientMsg := improperlyFormedClientMessage(lastErr)
 	if streamCommitted {
 		ensureMessageStart()
 		sse.WriteEvent("error", map[string]interface{}{
 			"type":  "error",
-			"error": map[string]string{"type": clientFacingClaudeErrorType(statusCode), "message": lastErr.Error()},
+			"error": map[string]string{"type": clientFacingClaudeErrorType(statusCode), "message": clientMsg},
 		})
 		return
 	}
-	h.sendClaudeError(w, statusCode, clientFacingClaudeErrorType(statusCode), lastErr.Error())
+	h.sendClaudeError(w, statusCode, clientFacingClaudeErrorType(statusCode), clientMsg)
 }
 
 // handleClaudeNonStream Claude 非流式响应
@@ -886,7 +888,7 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "api_error")
 	recordRequestMetrics("claude", model, false, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 	logRetryExhausted("claude", model, statusCode, errType, lastErr)
-	h.sendClaudeError(w, statusCode, clientFacingClaudeErrorType(statusCode), lastErr.Error())
+	h.sendClaudeError(w, statusCode, clientFacingClaudeErrorType(statusCode), improperlyFormedClientMessage(lastErr))
 }
 
 func (h *Handler) sendClaudeError(w http.ResponseWriter, status int, errType, message string) {
