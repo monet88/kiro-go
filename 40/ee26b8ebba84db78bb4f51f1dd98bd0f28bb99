@@ -1,0 +1,37 @@
+proxy/cache_snapshot_test.go
+  s_c6e51357c0cd62::t_5b92e492995bc2 162-205
+proxy/handler.go
+  s_c6e51357c0cd62::t_e54b27219485e8 75-81,85-86
+  s_c6e51357c0cd62::t_dbd69af3b5b085 97-101
+  s_c6e51357c0cd62::t_d577bc9e3cb07c 36-38
+  s_c6e51357c0cd62::t_f106d60a32ff13 32-35
+  s_c6e51357c0cd62::t_8036fb46cb307d 122-126
+  s_c6e51357c0cd62::t_49e3e95c81b366 112-121,127-129
+  s_c6e51357c0cd62::t_45a454696d6fa6 89-92
+  s_c6e51357c0cd62::t_91215000baab80 82-84
+main.go
+  s_c6e51357c0cd62::t_c043a9a6fc2efd 17,26,28
+  s_c6e51357c0cd62::t_9cc1bf64aee998 82-97,99-108
+proxy/cache_snapshot.go
+  s_c6e51357c0cd62::t_a627b0e5f411ea 190-193
+  s_c6e51357c0cd62::t_254474bd413720 83-88
+  s_c6e51357c0cd62::t_8165ccaa15a9cf 179,181-182
+proxy/cache_tracker.go
+  s_c6e51357c0cd62::t_81af565dc0db35 78-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "40ee26b8ebba84db78bb4f51f1dd98bd0f28bb99",
+  "prompts": {},
+  "sessions": {
+    "s_c6e51357c0cd62": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "4335ee01-4070-4c80-ad87-16ae8a79c258",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
