@@ -1,0 +1,21 @@
+proxy/kiro_api.go
+  s_9ed4add135c84e::t_3e9e70e88ebf0c 63-66
+proxy/kiro_api_test.go
+  s_9ed4add135c84e::t_53bc74f6be294e 58-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "b6adb081b17e2923a79ec418758e8988038b8258",
+  "prompts": {},
+  "sessions": {
+    "s_9ed4add135c84e": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "8429e66e-4ddc-4890-82b7-00e074d61868",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
