@@ -7,6 +7,7 @@ import (
 	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"kiro-go/pool"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -45,9 +46,10 @@ func kiroRegionForProfile(account *config.Account, profileArn string) string {
 		if r := regionFromProfileArn(account.ProfileArn); r != "" {
 			return r
 		}
-		if r := strings.TrimSpace(account.Region); r != "" {
-			return r
-		}
+		// account.Region is the OIDC/SSO auth (portal) region, not the Amazon Q
+		// data-plane region. IDC Start URLs often land in portal-only regions
+		// such as eu-north-1 where q.{region}.amazonaws.com does not exist.
+		// Without a profile ARN, always use the default Q data-plane region.
 	}
 	return "us-east-1"
 }
@@ -59,9 +61,10 @@ func regionalizeURL(rawURL string, account *config.Account) string {
 }
 
 // regionalizeURLForProfile points a hardcoded us-east-1 Kiro endpoint at the
-// data-plane region derived from the profile (payload ARN first, then the account's
-// cached ARN, then account.Region). account.Region is the auth/OIDC region and can
-// differ from the profile's region, so the profile ARN is preferred.
+// data-plane region derived from the profile only: payload profileArn first, then
+// the account's cached ProfileArn. It never rewrites from account.Region (that is
+// the OIDC/SSO portal/auth region and can be a hostless portal region such as
+// eu-north-1). Missing both ARNs keeps the default us-east-1 endpoint unchanged.
 func regionalizeURLForProfile(rawURL string, account *config.Account, profileArn string) string {
 	return regionalizeURLForRegion(rawURL, kiroRegionForProfile(account, profileArn))
 }
@@ -86,23 +89,29 @@ func regionalizeURLForRegion(rawURL, region string) string {
 	).Replace(rawURL)
 }
 
-// defaultKiroProfileRegions is the ordered set of regions probed when an account's
-// home region is unknown. us-east-1 is the historical default every login falls
-// back to; eu-central-1 is where EU-provisioned Azure-tenant profiles
-// (e.g. KiroProfile-eu-central-1) live. Override or extend with the
+// defaultKiroProfileRegions is the ordered set of data-plane regions probed when
+// looking up a Kiro profile. us-east-1 is where most Q/Kiro profiles live;
+// eu-central-1 is common for EU-provisioned Azure-tenant profiles
+// (e.g. KiroProfile-eu-central-1). Override or extend with the
 // KIRO_PROFILE_REGIONS env var (comma-separated) to onboard further regions
 // without a code change.
+//
+// Note: account.Region is the OIDC/SSO *auth* region (often parsed from the
+// Identity Center Start URL, e.g. portal.eu-north-1.app.aws → eu-north-1). That
+// region is required for token refresh (oidc.{region}.amazonaws.com) but is NOT
+// always a valid Amazon Q host (q.eu-north-1.amazonaws.com often does not exist).
+// Profile discovery therefore always falls through to these defaults after the
+// account region; the cached profile ARN then drives the data-plane region via
+// kiroRegionForProfile.
 var defaultKiroProfileRegions = []string{"us-east-1", "eu-central-1"}
 
 // kiroProfileRegionCandidates returns the ordered, de-duplicated list of regions
-// to probe for an account's Kiro profile. The account's currently-configured region
-// is always tried first. Cross-region fallbacks are only added when the home region
-// is genuinely unknown — an external_idp (Azure-tenant) login, which defaults to
-// us-east-1, or an account with no region at all. An idc/social/Builder ID account
-// already carries its real region (from the SSO portal / the us-east-1 default), so
-// it is probed against that single region exactly as before — no extra upstream calls
-// and no chance of its established region being flipped. KIRO_PROFILE_REGIONS, when
-// set, replaces the built-in fallback set (the account region is still tried first).
+// to probe for an account's Kiro profile. The account's currently-configured
+// auth region is always tried first (cheap when it is also the profile home).
+// Built-in / env fallbacks always follow so IDC portal regions that are not Q
+// data-plane regions still discover profiles (typical case: portal eu-north-1,
+// profile us-east-1). KIRO_PROFILE_REGIONS, when set, replaces the built-in
+// fallback set (the account region is still tried first).
 func kiroProfileRegionCandidates(account *config.Account) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -118,9 +127,6 @@ func kiroProfileRegionCandidates(account *config.Account) []string {
 	if account != nil {
 		add(account.Region)
 	}
-	if !shouldProbeFallbackRegions(account) {
-		return out
-	}
 	if env := strings.TrimSpace(os.Getenv("KIRO_PROFILE_REGIONS")); env != "" {
 		for _, r := range strings.Split(env, ",") {
 			add(r)
@@ -131,20 +137,6 @@ func kiroProfileRegionCandidates(account *config.Account) []string {
 		add(r)
 	}
 	return out
-}
-
-// shouldProbeFallbackRegions reports whether an account's home region is unknown
-// enough to justify probing fallback regions. Only external_idp accounts (region
-// defaulted to us-east-1 at login) and accounts with no region set qualify; every
-// other auth method already carries its authoritative region.
-func shouldProbeFallbackRegions(account *config.Account) bool {
-	if account == nil {
-		return true
-	}
-	if strings.TrimSpace(account.Region) == "" {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(account.AuthMethod), "external_idp")
 }
 
 // GetUsageLimits 获取账户使用量和订阅信息
@@ -168,12 +160,19 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		// Some IDC credentials accept usage without profileArn but 403 when one is
+		// attached. Drop the cached ARN and retry once bare on the default region.
+		if resp.StatusCode == 403 && account != nil && strings.TrimSpace(account.ProfileArn) != "" && isInvalidBearerTokenBody(string(body)) {
+			clearAccountProfileArn(account)
+			return GetUsageLimits(account)
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
+	defer resp.Body.Close()
 
 	var result UsageLimitsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -234,12 +233,17 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == 403 && account != nil && strings.TrimSpace(account.ProfileArn) != "" && isInvalidBearerTokenBody(string(body)) {
+			clearAccountProfileArn(account)
+			return ListAvailableModels(account)
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
+	defer resp.Body.Close()
 
 	var result struct {
 		Models []ModelInfo `json:"models"`
@@ -267,12 +271,12 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 
 	if !profileLookupSuppressed {
 		// Probe ListAvailableProfiles across candidate regions, retrying transient
-		// failures. The home region is unknown at login for Azure-tenant
-		// (external_idp) accounts (they default to us-east-1), so the probe is what
-		// discovers a profile that lives outside the account's configured region. The
-		// cached ARN then drives the data-plane region via kiroRegionForProfile — no
-		// separate region persistence is needed (and account.Region stays the auth
-		// region, which can legitimately differ from the profile's region).
+		// failures. account.Region is the OIDC/SSO auth region (Start URL / portal)
+		// and often differs from the Kiro profile's data-plane region — e.g. IAM
+		// Identity Center portals in eu-north-1 with Q profiles in us-east-1.
+		// Cross-region probing discovers the profile; the cached ARN then drives
+		// data-plane calls via kiroRegionForProfile while account.Region stays the
+		// auth region for token refresh.
 		profileArn, err := resolveProfileArnAcrossRegions(account)
 		if err == nil && profileArn != "" {
 			if updateErr := config.UpdateAccountProfileArn(account.ID, profileArn); updateErr != nil {
@@ -367,7 +371,18 @@ func isProfileArnResolutionUnsupportedError(err error) bool {
 }
 
 func isProfileArnResolutionSoftError(err error) bool {
-	return isProfileArnResolutionSkippedError(err) || isProfileArnResolutionUnsupportedError(err)
+	if isProfileArnResolutionSkippedError(err) || isProfileArnResolutionUnsupportedError(err) {
+		return true
+	}
+	// IDC tokens often get an empty ListAvailableProfiles list while chat still
+	// works without a profileArn on the default data-plane. Treat "no profile"
+	// as non-fatal for REST helpers (usage/models) so background refresh does
+	// not hard-fail and cascade into account disable.
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no available kiro profile") || strings.Contains(msg, "empty profile list")
 }
 
 func ensureRestProfileArn(account *config.Account) error {
@@ -506,6 +521,36 @@ func withProfileArnQuery(rawURL string, account *config.Account) string {
 		return rawURL
 	}
 	return rawURL + "&profileArn=" + neturl.QueryEscape(profileArn)
+}
+
+// isInvalidBearerTokenBody reports the common CodeWhisperer/Q 403 body that is
+// returned both for truly dead credentials and for profileArn/route mismatches.
+func isInvalidBearerTokenBody(body string) bool {
+	msg := strings.ToLower(strings.TrimSpace(body))
+	return strings.Contains(msg, "bearer token") && strings.Contains(msg, "invalid")
+}
+
+// clearAccountProfileArn drops a cached profile ARN that upstream rejected for
+// this credential so later calls target the default data-plane without it.
+//
+// The request-scoped account pointer is a pool/config copy (not a shared pool
+// entry). We update that local copy for the remainder of the request, and sync
+// persistence via config + the pool lock so later acquires see the cleared ARN.
+func clearAccountProfileArn(account *config.Account) {
+	if account == nil || strings.TrimSpace(account.ProfileArn) == "" {
+		return
+	}
+	account.ProfileArn = ""
+	id := strings.TrimSpace(account.ID)
+	if id == "" {
+		return
+	}
+	if err := config.UpdateAccountProfileArn(id, ""); err != nil {
+		logger.Warnf("[ProfileArn] Failed to clear rejected profile ARN for %s: %v", accountEmailForLog(account), err)
+	}
+	if p := pool.GetPool(); p != nil {
+		p.UpdateProfileArn(id, "")
+	}
 }
 
 func setKiroHeaders(req *http.Request, account *config.Account) {

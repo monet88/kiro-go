@@ -3385,12 +3385,31 @@
       '</div>';
     $('startBuilderIdBtn').addEventListener('click', startBuilderIdLogin);
   }
+  // OIDC/SSO auth region from IAM Identity Center Start URL host.
+  // Examples:
+  //   https://ssoins-xxx.portal.eu-north-1.app.aws/  → eu-north-1
+  //   https://xxx.awsapps.com/start                 → (none; leave default)
+  // This region is for oidc.{region}.amazonaws.com only — Kiro Q profile may live
+  // elsewhere (often us-east-1); server-side profile probe discovers that.
+  function regionFromIamStartUrl(startUrl) {
+    try {
+      const host = new URL(String(startUrl || '').trim()).hostname.toLowerCase();
+      let m = host.match(/\.portal\.([a-z0-9-]+)\.app\.aws$/);
+      if (m) return m[1];
+      m = host.match(/\.awsapps\.com$/);
+      if (m) return '';
+      m = host.match(/(?:^|\.)([a-z]{2}(?:-[a-z]+)+-\d)\./);
+      if (m) return m[1];
+    } catch (_) { /* ignore invalid URL */ }
+    return '';
+  }
   function modalIam(title, body) {
     title.textContent = t('modal.iamTitle');
     body.innerHTML =
       '<p class="help-block">' + escapeHtml(t('modal.iamDesc')) + '</p>' +
       '<div class="form-group"><label>' + escapeHtml(t('iam.startUrl')) + '</label><input type="text" id="iamStartUrl" placeholder="https://xxx.awsapps.com/start" /></div>' +
       '<div class="form-group"><label>' + escapeHtml(t('detail.region')) + '</label><input type="text" id="iamRegion" value="us-east-1" /></div>' +
+      '<p class="help-block text-xs">' + escapeHtml('Region auto-fills from Start URL for OIDC (auth). Kiro data-plane profile is discovered after login (often us-east-1 even when portal is eu-*).') + '</p>' +
       '<div id="iamStep2" class="hidden">' +
       '<div class="form-group"><label>' + escapeHtml(t('iam.loginUrl')) + '</label>' +
       '<div class="endpoint"><span id="iamAuthUrl" class="font-mono text-xs"></span></div>' +
@@ -3407,6 +3426,17 @@
       '<button class="btn btn-primary" id="iamBtn" type="button">' + escapeHtml(t('builderid.startLogin')) + '</button>' +
       '</div>';
     $('iamBtn').addEventListener('click', startIamSso);
+    const startInput = $('iamStartUrl');
+    const regionInput = $('iamRegion');
+    if (startInput && regionInput) {
+      const syncRegion = () => {
+        const parsed = regionFromIamStartUrl(startInput.value);
+        if (parsed) regionInput.value = parsed;
+      };
+      startInput.addEventListener('input', syncRegion);
+      startInput.addEventListener('change', syncRegion);
+      startInput.addEventListener('blur', syncRegion);
+    }
   }
   function modalSso(title, body) {
     title.textContent = t('modal.ssoTitle');

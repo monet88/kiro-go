@@ -59,11 +59,11 @@ func TestRegionalizeURLForRegionNoCodewhispererRegionalHost(t *testing.T) {
 	}
 }
 
-// TestKiroProfileRegionCandidatesExternalIdp checks that an external_idp account —
-// whose home region is unknown and defaults to us-east-1 — probes the account region
-// first and then the built-in fallbacks, de-duplicated.
-func TestKiroProfileRegionCandidatesExternalIdp(t *testing.T) {
-	// Default us-east-1 external_idp login: fallbacks follow.
+// TestKiroProfileRegionCandidatesAlwaysFallsBack checks that every auth method
+// probes the account auth region first, then built-in data-plane fallbacks.
+// Portal/OIDC region (e.g. eu-north-1 on an IDC Start URL) is not assumed to host Q.
+func TestKiroProfileRegionCandidatesAlwaysFallsBack(t *testing.T) {
+	// external_idp default us-east-1: fallbacks follow (deduped).
 	got := kiroProfileRegionCandidates(&config.Account{AuthMethod: "external_idp", Region: "us-east-1"})
 	assertOrder(t, got, []string{"us-east-1", "eu-central-1"})
 
@@ -71,9 +71,18 @@ func TestKiroProfileRegionCandidatesExternalIdp(t *testing.T) {
 	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "external_idp", Region: "eu-central-1"})
 	assertOrder(t, got, []string{"eu-central-1", "us-east-1"})
 
-	// A non-default region leads, both defaults follow.
+	// Non-default region leads, both defaults follow.
 	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "external_idp", Region: "ap-southeast-2"})
 	assertOrder(t, got, []string{"ap-southeast-2", "us-east-1", "eu-central-1"})
+
+	// IAM Identity Center: portal eu-north-1 must still discover us-east-1 profiles.
+	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "eu-north-1"})
+	assertOrder(t, got, []string{"eu-north-1", "us-east-1", "eu-central-1"})
+
+	for _, method := range []string{"idc", "social", "builderId", ""} {
+		got = kiroProfileRegionCandidates(&config.Account{AuthMethod: method, Region: "eu-central-1"})
+		assertOrder(t, got, []string{"eu-central-1", "us-east-1"})
+	}
 }
 
 // TestKiroProfileRegionCandidatesNoRegion checks an account with no region set falls
@@ -83,29 +92,17 @@ func TestKiroProfileRegionCandidatesNoRegion(t *testing.T) {
 	assertOrder(t, got, []string{"us-east-1", "eu-central-1"})
 }
 
-// TestKiroProfileRegionCandidatesSingleRegionAuthMethods checks that idc/social/
-// Builder ID accounts — which already carry their authoritative region — are probed
-// against that single region only, with no fallback probing.
-func TestKiroProfileRegionCandidatesSingleRegionAuthMethods(t *testing.T) {
-	for _, method := range []string{"idc", "social", "builderId", ""} {
-		got := kiroProfileRegionCandidates(&config.Account{AuthMethod: method, Region: "eu-central-1"})
-		if len(got) != 1 || got[0] != "eu-central-1" {
-			t.Fatalf("authMethod %q: candidate regions = %v, want [eu-central-1] only", method, got)
-		}
-	}
-}
-
 // TestKiroProfileRegionCandidatesEnvOverride checks KIRO_PROFILE_REGIONS replaces
-// the built-in fallbacks (external_idp only) while the account region is tried first.
+// the built-in fallbacks for all auth methods while the account region is tried first.
 func TestKiroProfileRegionCandidatesEnvOverride(t *testing.T) {
 	t.Setenv("KIRO_PROFILE_REGIONS", "eu-west-1, ap-south-1 ,eu-west-1")
 	got := kiroProfileRegionCandidates(&config.Account{AuthMethod: "external_idp", Region: "us-east-1"})
 	// us-east-1 (account) first; env values de-duplicated and trimmed; no built-in defaults.
 	assertOrder(t, got, []string{"us-east-1", "eu-west-1", "ap-south-1"})
 
-	// A non-external_idp account ignores the env fallbacks entirely.
-	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "us-east-1"})
-	assertOrder(t, got, []string{"us-east-1"})
+	// IDC also gets env fallbacks (portal region may not host Q).
+	got = kiroProfileRegionCandidates(&config.Account{AuthMethod: "idc", Region: "eu-north-1"})
+	assertOrder(t, got, []string{"eu-north-1", "eu-west-1", "ap-south-1"})
 }
 
 func assertOrder(t *testing.T, got, want []string) {

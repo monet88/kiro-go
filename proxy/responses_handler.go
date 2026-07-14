@@ -330,13 +330,12 @@ func (h *Handler) handleResponsesStream(
 		return
 	}
 
+	// Stream Keepalive: idle SSE comments only; events go through sse.WriteEvent.
+	sse := startStreamSSE(w, flusher)
+	defer sse.Stop()
+
 	send := func(eventName string, payload interface{}) {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return
-		}
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, string(data))
-		flusher.Flush()
+		sse.WriteEvent(eventName, payload)
 	}
 
 	createdAt := time.Now().Unix()
@@ -571,8 +570,7 @@ func (h *Handler) handleResponsesStream(
 			})
 			// Match the success path: terminate the SSE stream with [DONE] so
 			// clients stop reading instead of hanging.
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
+			sse.WriteData("[DONE]")
 			h.recordFailure()
 			return
 		}
@@ -641,8 +639,7 @@ func (h *Handler) handleResponsesStream(
 			"type":     "response.completed",
 			"response": respObj,
 		})
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		sse.WriteData("[DONE]")
 		return
 	}
 
