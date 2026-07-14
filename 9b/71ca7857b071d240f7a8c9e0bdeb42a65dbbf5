@@ -1,0 +1,28 @@
+auth/iam_sso.go
+  s_9ed4add135c84e::t_6e466358698b15 13
+  s_9ed4add135c84e::t_b6ab67997f013c 44-62,65-68
+auth/iam_sso_region_test.go
+  s_9ed4add135c84e::t_6e466358698b15 1-22
+proxy/kiro_api.go
+  s_9ed4add135c84e::t_bc4f69630d5c04 89-92,95-102,106-111,259-264
+proxy/kiro_region_test.go
+  s_9ed4add135c84e::t_1def01e2f7da60 62-66,74,77-85,96,103-105
+web/app.js
+  s_9ed4add135c84e::t_e4226125e98b9d 3388-3405,3412,3429-3439
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "9b71ca7857b071d240f7a8c9e0bdeb42a65dbbf5",
+  "prompts": {},
+  "sessions": {
+    "s_9ed4add135c84e": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "8429e66e-4ddc-4890-82b7-00e074d61868",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
