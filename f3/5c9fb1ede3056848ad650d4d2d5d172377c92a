@@ -1,0 +1,21 @@
+proxy/tool_compression_test.go
+  s_0cb294fde77bab::t_a9ac90c4c2114e 96-97
+proxy/tool_compression.go
+  s_0cb294fde77bab::t_f4f5bc131e4a4d 18-20,28-29,53-54,60-76,83,93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "f35c9fb1ede3056848ad650d4d2d5d172377c92a",
+  "prompts": {},
+  "sessions": {
+    "s_0cb294fde77bab": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "7d38d091-610b-4376-a091-91e7f17e7522",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
