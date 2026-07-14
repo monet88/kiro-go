@@ -1,0 +1,29 @@
+proxy/kiro.go
+  s_9ed4add135c84e::t_4b4e3e0ec59eda 415,465,527-551
+proxy/kiro_api.go
+  s_9ed4add135c84e::t_724b8e5392cc3f 10,384-385,535-538,544-552
+pool/account.go
+  s_9ed4add135c84e::t_dc500dfecf8c50 1373-1386
+proxy/account_failover.go
+  s_9ed4add135c84e::t_5ebdaa9d677ca1 186-187,191-198,205-219,221-224,226,233-241,245-248,251,254-255,261,266-308
+proxy/account_failover_test.go
+  s_9ed4add135c84e::t_1b8974dfd55202 47-80
+proxy/handler_routing.go
+  s_9ed4add135c84e::t_dad711d433b371 104-105,107-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "171fd8a51f33cce478161ca402d4a39962848387",
+  "prompts": {},
+  "sessions": {
+    "s_9ed4add135c84e": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "8429e66e-4ddc-4890-82b7-00e074d61868",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
