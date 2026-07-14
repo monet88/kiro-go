@@ -30,6 +30,7 @@ func convertClaudeTools(tools []ClaudeTool) ([]KiroToolWrapper, map[string]strin
 		w.ToolSpecification.InputSchema = InputSchema{JSON: ensureObjectSchema(tool.InputSchema)}
 		result = append(result, w)
 	}
+	result = compressToolsIfNeeded(result)
 	return result, nameMap
 }
 
@@ -546,5 +547,5 @@ func convertOpenAITools(tools []OpenAITool) []KiroToolWrapper {
 		wrapper.ToolSpecification.InputSchema = InputSchema{JSON: ensureObjectSchema(tool.Function.Parameters)}
 		result = append(result, wrapper)
 	}
-	return result
+	return compressToolsIfNeeded(result)
 }

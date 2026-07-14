@@ -104,7 +104,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 		Tools:    req.Tools,
 	}
 	if req.Temperature != nil {
-		openaiReq.Temperature = *req.Temperature
+		openaiReq.Temperature = req.Temperature
 	}
 	if req.MaxOutputTokens != nil {
 		openaiReq.MaxTokens = *req.MaxOutputTokens
@@ -253,7 +253,7 @@ func (h *Handler) handleResponsesNonStream(
 	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
 	recordRequestMetrics("responses", model, false, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
 	logRetryExhausted("responses", model, statusCode, errType, lastErr)
-	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), lastErr.Error())
+	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(lastErr))
 }
 
 func buildResponsesObject(
@@ -672,7 +672,7 @@ func (h *Handler) handleResponsesStream(
 			"status": "failed",
 			"error": map[string]string{
 				"type":    clientFacingOpenAIErrorType(statusCode),
-				"message": lastErr.Error(),
+				"message": improperlyFormedClientMessage(lastErr),
 			},
 		},
 	})
