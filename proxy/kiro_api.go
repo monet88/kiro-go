@@ -45,9 +45,10 @@ func kiroRegionForProfile(account *config.Account, profileArn string) string {
 		if r := regionFromProfileArn(account.ProfileArn); r != "" {
 			return r
 		}
-		if r := strings.TrimSpace(account.Region); r != "" {
-			return r
-		}
+		// account.Region is the OIDC/SSO auth (portal) region, not the Amazon Q
+		// data-plane region. IDC Start URLs often land in portal-only regions
+		// such as eu-north-1 where q.{region}.amazonaws.com does not exist.
+		// Without a profile ARN, always use the default Q data-plane region.
 	}
 	return "us-east-1"
 }
@@ -157,12 +158,19 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		// Some IDC credentials accept usage without profileArn but 403 when one is
+		// attached. Drop the cached ARN and retry once bare on the default region.
+		if resp.StatusCode == 403 && account != nil && strings.TrimSpace(account.ProfileArn) != "" && isInvalidBearerTokenBody(string(body)) {
+			clearAccountProfileArn(account)
+			return GetUsageLimits(account)
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
+	defer resp.Body.Close()
 
 	var result UsageLimitsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -223,12 +231,17 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == 403 && account != nil && strings.TrimSpace(account.ProfileArn) != "" && isInvalidBearerTokenBody(string(body)) {
+			clearAccountProfileArn(account)
+			return ListAvailableModels(account)
+		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
+	defer resp.Body.Close()
 
 	var result struct {
 		Models []ModelInfo `json:"models"`
@@ -356,7 +369,18 @@ func isProfileArnResolutionUnsupportedError(err error) bool {
 }
 
 func isProfileArnResolutionSoftError(err error) bool {
-	return isProfileArnResolutionSkippedError(err) || isProfileArnResolutionUnsupportedError(err)
+	if isProfileArnResolutionSkippedError(err) || isProfileArnResolutionUnsupportedError(err) {
+		return true
+	}
+	// IDC tokens often get an empty ListAvailableProfiles list while chat still
+	// works without a profileArn on the default data-plane. Treat "no profile"
+	// as non-fatal for REST helpers (usage/models) so background refresh does
+	// not hard-fail and cascade into account disable.
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no available Kiro profile") || strings.Contains(msg, "empty profile list")
 }
 
 func ensureRestProfileArn(account *config.Account) error {
@@ -495,6 +519,27 @@ func withProfileArnQuery(rawURL string, account *config.Account) string {
 		return rawURL
 	}
 	return rawURL + "&profileArn=" + neturl.QueryEscape(profileArn)
+}
+
+// isInvalidBearerTokenBody reports the common CodeWhisperer/Q 403 body that is
+// returned both for truly dead credentials and for profileArn/route mismatches.
+func isInvalidBearerTokenBody(body string) bool {
+	msg := strings.ToLower(strings.TrimSpace(body))
+	return strings.Contains(msg, "bearer token") && strings.Contains(msg, "invalid")
+}
+
+// clearAccountProfileArn drops a cached profile ARN that upstream rejected for
+// this credential so later calls target the default data-plane without it.
+func clearAccountProfileArn(account *config.Account) {
+	if account == nil || strings.TrimSpace(account.ProfileArn) == "" {
+		return
+	}
+	account.ProfileArn = ""
+	if id := strings.TrimSpace(account.ID); id != "" {
+		if err := config.UpdateAccountProfileArn(id, ""); err != nil {
+			logger.Warnf("[ProfileArn] Failed to clear rejected profile ARN for %s: %v", accountEmailForLog(account), err)
+		}
+	}
 }
 
 func setKiroHeaders(req *http.Request, account *config.Account) {

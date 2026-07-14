@@ -459,6 +459,68 @@ func CallKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 			body := strings.TrimSpace(string(errBody))
 			lastErr = &KiroAPIError{StatusCode: resp.StatusCode, Endpoint: ep.Name, Body: body}
 			recordUpstreamErrorProbe(ep.Name, "response", resp.StatusCode, currentMessageModelID(payload), account, body)
+
+			// Some IDC tokens accept generateAssistantResponse only without a
+			// profileArn. Upstream returns 403 "bearer token ... invalid" when a
+			// profile is attached even though the same token works bare on
+			// us-east-1. Strip the profile once and retry this endpoint.
+			if resp.StatusCode == 403 && payload != nil && strings.TrimSpace(payload.ProfileArn) != "" && isInvalidBearerTokenBody(body) {
+				logger.Warnf("[KiroAPI] Endpoint %s rejected profileArn for %s; retrying without profile on default data-plane", ep.Name, accountEmailForLog(account))
+				clearAccountProfileArn(account)
+				payload.ProfileArn = ""
+				epURL = regionalizeURLForProfile(ep.URL, account, "")
+				reqBody, marshalErr := json.Marshal(payload)
+				if marshalErr != nil {
+					return marshalErr
+				}
+				retryReq, retryErr := http.NewRequestWithContext(ctx, "POST", epURL, bytes.NewReader(reqBody))
+				if retryErr != nil {
+					lastErr = retryErr
+					continue
+				}
+				host := ""
+				if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
+					host = parsedURL.Host
+				}
+				headerValues := buildStreamingHeaderValues(account, host)
+				retryReq.Header.Set("Content-Type", "application/json")
+				retryReq.Header.Set("Accept", "*/*")
+				if ep.AmzTarget != "" {
+					retryReq.Header.Set("X-Amz-Target", ep.AmzTarget)
+				}
+				applyKiroBaseHeaders(retryReq, account, headerValues)
+				retryReq.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+				retryReq.Header.Set("x-amzn-codewhisperer-optout", "true")
+				retryReq.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
+				retryReq.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
+				retryResp, retryDoErr := GetClientForProxy(ResolveAccountProxyURL(account)).Do(retryReq)
+				if retryDoErr != nil {
+					lastErr = retryDoErr
+					if !isClientDisconnectError(ctx, retryDoErr) {
+						recordUpstreamErrorProbe(ep.Name, "connect", 0, currentMessageModelID(payload), account, retryDoErr.Error())
+					}
+					continue
+				}
+				if retryResp.StatusCode == 200 {
+					err = parseEventStream(ctx, retryResp.Body, callback)
+					retryResp.Body.Close()
+					if err != nil && !isClientDisconnectError(ctx, err) {
+						recordUpstreamErrorProbe(ep.Name, "stream", 200, currentMessageModelID(payload), account, err.Error())
+					}
+					return err
+				}
+				retryBody, _ := io.ReadAll(retryResp.Body)
+				retryResp.Body.Close()
+				body = strings.TrimSpace(string(retryBody))
+				lastErr = &KiroAPIError{StatusCode: retryResp.StatusCode, Endpoint: ep.Name, Body: body}
+				recordUpstreamErrorProbe(ep.Name, "response", retryResp.StatusCode, currentMessageModelID(payload), account, body)
+				if retryResp.StatusCode == 401 || retryResp.StatusCode == 403 || retryResp.StatusCode == 402 {
+					return lastErr
+				}
+				logger.Warnf("[KiroAPI] Endpoint %s error after profile-less retry: %v", ep.Name, lastErr)
+				continue
+			}
+
 			// Authentication errors and payment errors are not retried across endpoints.
 			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
 				return lastErr

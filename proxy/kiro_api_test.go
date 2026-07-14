@@ -43,6 +43,18 @@ func TestRegionalizeURLPrefersProfileArnRegion(t *testing.T) {
 	}
 }
 
+func TestKiroRegionForProfileIgnoresAuthRegionWithoutProfile(t *testing.T) {
+	// IDC portal region must not rewrite Q endpoints when profileArn is missing.
+	account := &config.Account{AuthMethod: "idc", Region: "eu-north-1"}
+	if got := kiroRegionForProfile(account, ""); got != "us-east-1" {
+		t.Fatalf("expected default data-plane region without profileArn, got %q", got)
+	}
+	rawURL := "https://q.us-east-1.amazonaws.com/generateAssistantResponse"
+	if got := regionalizeURL(rawURL, account); got != rawURL {
+		t.Fatalf("expected no regional rewrite without profileArn, got %q", got)
+	}
+}
+
 func TestRegionalizeURLForProfileUsesPayloadProfileArnRegion(t *testing.T) {
 	account := &config.Account{Region: "ap-southeast-1"}
 

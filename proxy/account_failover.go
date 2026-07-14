@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
 	"math/rand"
@@ -178,10 +179,59 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		// but never auto-disable — operators can still investigate via warn logs.
 		h.pool.RecordError(account.ID, false)
 	case isAuthErrorMessage(errMsg):
+		// Upstream 403 bodies often say "token invalid" for profile/region/route
+		// mismatches, not only for truly dead credentials. Attempt one OIDC/social
+		// refresh before disabling: if refresh works the account stays online and
+		// background refresh continues; real invalid_grant still disables.
+		if h.tryRefreshAccountAfterAuthError(account) {
+			logger.Warnf("[AccountFailover] Auth-looking error for %s recovered by token refresh; keeping account enabled", account.Email)
+			h.pool.RecordError(account.ID, false)
+			return
+		}
 		h.disableAccount(account, "DISABLED", "Authentication failed - token invalid or expired")
 	default:
 		h.pool.RecordError(account.ID, false)
 	}
+}
+
+// tryRefreshAccountAfterAuthError forces a credential refresh after an upstream
+// auth-looking failure. Returns true when a new access token was obtained so the
+// caller can keep the account enabled. Failed refresh (including invalid_grant)
+// returns false and leaves disable/ban decisions to the caller.
+func (h *Handler) tryRefreshAccountAfterAuthError(account *config.Account) bool {
+	if account == nil || strings.TrimSpace(account.RefreshToken) == "" {
+		return false
+	}
+
+	mu := h.accountRefreshLock(account.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	accessToken, refreshToken, expiresAt, profileArn, err := auth.RefreshToken(account)
+	if err != nil {
+		logger.Warnf("[AccountFailover] Token refresh after auth error failed for %s: %v", account.Email, err)
+		return false
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return false
+	}
+
+	h.pool.UpdateToken(account.ID, accessToken, refreshToken, expiresAt)
+	account.AccessToken = accessToken
+	if refreshToken != "" {
+		account.RefreshToken = refreshToken
+	}
+	account.ExpiresAt = expiresAt
+	if err := config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt); err != nil {
+		logger.Warnf("[AccountFailover] Failed to persist refreshed token for %s: %v", account.Email, err)
+	}
+	if profileArn != "" {
+		account.ProfileArn = profileArn
+		if err := config.UpdateAccountProfileArn(account.ID, profileArn); err != nil {
+			logger.Warnf("[AccountFailover] Failed to persist profile ARN for %s: %v", account.Email, err)
+		}
+	}
+	return true
 }
 
 func (h *Handler) handleAccountTestFailure(account *config.Account, err error) {
