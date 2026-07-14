@@ -1370,6 +1370,20 @@ func (p *AccountPool) UpdateToken(id, accessToken, refreshToken string, expiresA
 	}
 }
 
+// UpdateProfileArn updates the in-memory profile ARN for an account under the
+// pool lock. Routing hands out account copies; callers must not write shared
+// pool entries directly.
+func (p *AccountPool) UpdateProfileArn(id, profileArn string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.accounts {
+		if p.accounts[i].ID == id {
+			p.accounts[i].ProfileArn = profileArn
+			return
+		}
+	}
+}
+
 // Count 返回账号总数
 func (p *AccountPool) Count() int {
 	p.mu.RLock()
