@@ -1,0 +1,22 @@
+version.json
+  s_7752dcb8dbf840::t_3ba0864fed7e73 2
+  s_7752dcb8dbf840::t_f246b889268b56 3
+config/config_types.go
+  s_7752dcb8dbf840::t_f3997511dbd32b 289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "aa8839133750aa88dfdd54e11535cfdfc3e53318",
+  "prompts": {},
+  "sessions": {
+    "s_7752dcb8dbf840": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "c3ed0a6f-969e-4ef2-b358-c24c2e6a2a55",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
