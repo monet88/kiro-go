@@ -1280,6 +1280,7 @@
     return !!(a && a.banStatus === 'SUSPENDED' && !isAuto429Quarantine(a) && !isAuthDisabled(a));
   }
   function isTokenIssue(a) {
+	if (a && a.isApiKeyAccount) return !a.hasToken;
     return !hasTestCredentials(a) || !!(a.expiresAt && a.expiresAt < Date.now() / 1000 && !a.hasRefreshToken);
   }
   function isCooling(a) {
@@ -1582,12 +1583,15 @@
     return '';
   }
   function isOverageEnabled(a) {
+    if (a && a.isApiKeyAccount) return false;
     return String(a && a.overageStatus || '').toUpperCase() === 'ENABLED';
   }
   function isOverMainQuota(a) {
+    if (a && a.isApiKeyAccount) return false;
     return Number(a && a.usageLimit || 0) > 0 && Number(a && a.usageCurrent || 0) > Number(a && a.usageLimit || 0);
   }
   function isOverageEffective(a) {
+    if (a && a.isApiKeyAccount) return false;
     return Boolean(a && a.overageEffective) || isOverageEnabled(a) || isOverMainQuota(a);
   }
   function formatUsagePct(pct) {
@@ -1616,6 +1620,9 @@
     return '$' + num.toFixed(num >= 1 ? 2 : 4);
   }
   function getEffectiveUsageInfo(a) {
+    if (a && a.isApiKeyAccount) {
+      return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
+    }
     const limit = Number(a && a.usageLimit || 0);
     if (!(limit > 0)) {
       return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
@@ -1655,6 +1662,9 @@
     };
   }
   function getMainUsageInfo(a) {
+    if (a && a.isApiKeyAccount) {
+      return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
+    }
     const limit = Number(a.usageLimit || 0);
     if (!(limit > 0)) {
       return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
@@ -1684,6 +1694,7 @@
     };
   }
   function getOverageInfo(a) {
+    if (a && a.isApiKeyAccount) return null;
     if (!isOverageEffective(a)) return null;
     const current = getOverageUsedPoints(a);
     const cap = getOverageCapPoints(a);
@@ -1789,12 +1800,14 @@
       const usageTitle = data.mainUsage.visible ? data.mainUsage.title : '-';
       const overageText = data.overageUsage ? '<span class="account-list-trial account-list-overage">' + escapeHtml(data.overageUsage.text) + '</span>' : '';
       const trialText = data.trialUsage ? '<span class="account-list-trial">' + escapeHtml(t('accounts.trialQuota') + ' ' + data.trialUsage.text) + '</span>' : '';
+      const usageCell = a.isApiKeyAccount ? '<div class="account-list-cell account-list-usage"></div>' :
+        '<div class="account-list-cell account-list-usage" title="' + escapeAttr(usageTitle) + '"><span class="list-cell-label">' + escapeHtml(t('accounts.usage')) + '</span><strong>' + escapeHtml(usageText) + '</strong>' + overageText + trialText + (data.mainUsage.visible ? '<div class="usage-bar list-usage-bar"><div class="usage-fill ' + escapeAttr(data.mainUsage.className) + '" data-usage-pct="' + escapeAttr(data.mainUsage.barPct) + '"></div></div>' : '') + '</div>';
       return '<div class="account-list-row' + (isSelected ? ' selected' : '') + '" data-id="' + idAttr + '">' +
         '<div class="account-list-cell account-list-check"><input type="checkbox" class="account-checkbox" ' + (isSelected ? 'checked' : '') + ' data-id="' + idAttr + '" aria-label="' + escapeAttr(selectLabel) + '" /></div>' +
         '<div class="account-list-cell account-list-identity"><div class="account-title-row"><span class="account-email">' + escapeHtml(data.displayEmail) + '</span>' + renderPrimaryStatus(a) + '</div><div class="account-meta-line"><span>' + escapeHtml(tier) + '</span><span>' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span></div></div>' +
         '<div class="account-list-cell account-list-status"><span class="list-cell-label">' + escapeHtml(t('accounts.health')) + '</span><strong>' + escapeHtml(data.healthScore || '-') + '</strong></div>' +
         '<div class="account-list-cell account-list-429"><span class="list-cell-label">' + escapeHtml(t('accounts.rate429')) + '</span><strong class="' + (Number(a.recent429Rate || 0) > 0 ? 'text-danger' : 'text-success') + '">' + escapeHtml(formatPercent(a.recent429Rate)) + '</strong></div>' +
-        '<div class="account-list-cell account-list-usage" title="' + escapeAttr(usageTitle) + '"><span class="list-cell-label">' + escapeHtml(t('accounts.usage')) + '</span><strong>' + escapeHtml(usageText) + '</strong>' + overageText + trialText + (data.mainUsage.visible ? '<div class="usage-bar list-usage-bar"><div class="usage-fill ' + escapeAttr(data.mainUsage.className) + '" data-usage-pct="' + escapeAttr(data.mainUsage.barPct) + '"></div></div>' : '') + '</div>' +
+        usageCell +
         '<div class="account-list-cell account-list-requests"><span class="list-cell-label">' + escapeHtml(t('accounts.requests')) + '</span><strong>' + escapeHtml(a.requestCount || 0) + '</strong></div>' +
         '<div class="account-list-cell account-list-proxy"><span class="list-cell-label">' + escapeHtml(t('filter.proxy')) + '</span><strong>' + escapeHtml(data.proxyLabel) + '</strong></div>' +
         '<div class="account-list-cell account-list-actions">' + renderAccountActions(a, idAttr, banned, true) + '</div>' +
@@ -1930,8 +1943,9 @@
       const healthScore = Number.isFinite(Number(a.healthScore)) ? Number(a.healthScore) : 0;
       const metrics = renderMetric(t('accounts.health'), healthScore || '-', 'health') +
         renderMetric(t('accounts.rate429'), formatPercent(a.recent429Rate), Number(a.recent429Rate || 0) > 0 ? 'danger' : 'ok') +
-        renderMetric(t('accounts.usage'), mainUsage.visible ? mainUsage.text : '-', mainUsage.className === 'critical' ? 'danger' : mainUsage.className === 'high' ? 'warn' : 'ok') +
-        renderMetric(t('accounts.expiry'), formatTokenExpiry(a.expiresAt), isTokenIssue(a) ? 'danger' : 'default');
+        (a.isApiKeyAccount ? '' :
+          renderMetric(t('accounts.usage'), mainUsage.visible ? mainUsage.text : '-', mainUsage.className === 'critical' ? 'danger' : mainUsage.className === 'high' ? 'warn' : 'ok') +
+          renderMetric(t('accounts.expiry'), formatTokenExpiry(a.expiresAt), isTokenIssue(a) ? 'danger' : 'default'));
       const secondary = [
         getTrialBadge(a),
         renderOverageBadge(a),
@@ -2218,14 +2232,15 @@
     const subscriptionHtml =
       '<div class="detail-grid detail-grid-compact">' +
       detailItem(t('detail.subscriptionType'), a.subscriptionTitle || (a.subscriptionType ? formatSubscriptionLabel(a.subscriptionType) : '-')) +
-      detailItem(t('detail.mainQuota'), mainUsage.visible ? mainUsage.text : '-') +
-      detailItem(t('detail.resetDate'), a.nextResetDate || '-') +
-      detailItem(t('detail.tokenExpiry'), a.expiresAt ? new Date(a.expiresAt * 1000).toLocaleString() : '-') +
-      (a.trialUsageLimit > 0 ?
+      (a.isApiKeyAccount ? '' :
+        detailItem(t('detail.mainQuota'), mainUsage.visible ? mainUsage.text : '-') +
+        detailItem(t('detail.resetDate'), a.nextResetDate || '-') +
+        detailItem(t('detail.tokenExpiry'), a.expiresAt ? new Date(a.expiresAt * 1000).toLocaleString() : '-') +
+        (a.trialUsageLimit > 0 ?
         detailItem(t('detail.trialQuota'), (a.trialUsageCurrent != null ? a.trialUsageCurrent.toFixed(1) : 0) + ' / ' + a.trialUsageLimit.toFixed(0)) +
         detailItem(t('detail.trialStatus'), a.trialStatus || '-') +
         detailItem(t('detail.trialExpiry'), a.trialExpiresAt ? new Date(a.trialExpiresAt * 1000).toLocaleString() : '-')
-        : '') +
+        : '')) +
       '</div>';
     const settingsHtml =
       '<div class="detail-edit-list">' +
@@ -2240,7 +2255,7 @@
         '<div class="detail-control-row"><input type="text" id="proxyURLInput" value="' + escapeAttr(a.proxyURL || '') + '" placeholder="socks5://host:port" />' +
         '<button class="btn btn-xs btn-primary" data-detail-action="saveProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button></div>', t('detail.proxyHint')) +
       '</div>';
-    const overageHtml =
+    const overageHtml = a.isApiKeyAccount ? '' :
       '<div class="detail-accordion-actions"><button class="btn btn-xs btn-outline" data-detail-action="refreshOverage" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.overageRefresh')) + '</button></div>' +
       '<p class="help-block detail-help-compact">' + escapeHtml(t('detail.overageHint')) + '</p>' +
       renderOverageBlock(a, idAttr);
@@ -2272,7 +2287,7 @@
         '</div>') +
       detailSection(t('detail.subscription'), subscriptionHtml) +
       detailAccordion(t('detail.accountSettings'), settingsHtml) +
-      detailAccordion(t('detail.overage'), overageHtml) +
+      (a.isApiKeyAccount ? '' : detailAccordion(t('detail.overage'), overageHtml)) +
       detailAccordion(t('detail.statistics'), statsHtml) +
       detailAccordion(t('detail.models'), modelsHtml) +
       '</div>';
@@ -2343,6 +2358,7 @@
     await putAccount(id, { weight }, t('detail.saved'));
   }
   function renderOverageBadge(a) {
+    if (a && a.isApiKeyAccount) return '';
     const status = (a.overageStatus || '').toUpperCase();
     if (status === 'ENABLED') {
       return '<span class="badge badge-warning">' + escapeHtml(t('accounts.overageOn')) + '</span>';
@@ -3302,6 +3318,7 @@
     sso: 'fa-solid fa-shield-halved',
     local: 'fa-solid fa-folder-open',
     credentials: 'fa-solid fa-code',
+    apikey: 'fa-solid fa-key',
     cookie: 'fa-solid fa-cookie-bite'
   };
   function methodCard(type, title, desc) {
@@ -3326,6 +3343,7 @@
     else if (type === 'sso') modalSso(title, body);
     else if (type === 'local') modalLocal(title, body);
     else if (type === 'credentials') modalCredentials(title, body);
+    else if (type === 'apikey') modalApiKey(title, body);
     else if (type === 'cookie') modalCookie(title, body);
     else if (type === 'kam') modalKam(title, body);
     if (!modal.classList.contains('active')) openDialog('addModal');
@@ -3355,10 +3373,27 @@
       methodCard('sso', t('modal.ssoTitle'), t('modal.ssoDesc')) +
       methodCard('local', t('modal.localTitle'), t('modal.localDesc')) +
       methodCard('credentials', t('modal.credentialsTitle'), t('modal.credentialsDesc')) +
+      methodCard('apikey', t('modal.apiKeyTitle'), t('modal.apiKeyDesc')) +
       methodCard('cookie', t('modal.cookieTitle'), t('modal.cookieDesc')) +
       methodCard('kam', t('modal.kamTitle'), t('modal.kamDesc')) +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
+  }
+  function modalApiKey(title, body) {
+    title.textContent = t('modal.apiKeyTitle');
+    body.innerHTML =
+      '<p class="help-block">' + escapeHtml(t('modal.apiKeyDesc')) + '</p>' +
+      '<div class="form-group"><label>' + escapeHtml(t('apiKey.value')) + '</label>' +
+      '<input type="password" id="apiKeyValue" class="font-mono" autocomplete="off" /></div>' +
+      '<div class="form-group"><label>' + escapeHtml(t('detail.email')) + '</label>' +
+      '<input type="text" id="apiKeyEmail" autocomplete="email" /></div>' +
+      '<div class="form-group"><label>' + escapeHtml(t('detail.region')) + '</label>' +
+      '<input type="text" id="apiKeyRegion" value="us-east-1" /></div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
+      '<button class="btn btn-primary" id="addApiKeyBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
+      '</div>';
+    $('addApiKeyBtn').addEventListener('click', addApiKeyAccount);
   }
   function modalBuilderId(title, body) {
     title.textContent = t('modal.builderIdTitle');
@@ -3624,6 +3659,7 @@
           return {
             refreshToken: c.refreshToken || a.refreshToken,
             accessToken: c.accessToken || a.accessToken,
+            kiroApiKey: c.kiroApiKey || a.kiroApiKey,
             clientId: c.clientId || a.clientId,
             clientSecret: c.clientSecret || a.clientSecret,
             region: c.region || a.region,
@@ -3654,8 +3690,37 @@
         return;
       }
     }
+    const apiKeyItems = items.filter(item => {
+      const authMethod = String(item.authMethod || '').trim().toLowerCase();
+      return authMethod === 'api_key' || authMethod === 'apikey' ||
+        String(item.kiroApiKey || '').trim() !== '';
+    });
+    if (apiKeyItems.length > 1) {
+      toastWarning(t('credentials.apiKeySingleOnly'));
+      return;
+    }
     let ok = 0, fail = 0, newIds = [];
     for (const item of items) {
+      const declaredAuthMethod = String(item.authMethod || '').trim().toLowerCase();
+      const isApiKeyAuthMethod = declaredAuthMethod === 'api_key' || declaredAuthMethod === 'apikey';
+      const kiroApiKey = String(item.kiroApiKey || (isApiKeyAuthMethod ? item.accessToken : '') || '').trim();
+      const isApiKeyAccount = isApiKeyAuthMethod || String(item.kiroApiKey || '').trim() !== '';
+      if (isApiKeyAccount) {
+        if (!kiroApiKey) { fail++; continue; }
+        const payload = {
+          kiroApiKey,
+          authMethod: 'api_key',
+          email: item.email || '',
+          region: item.region || 'us-east-1'
+        };
+        try {
+          const res = await api('/auth/credentials', { method: 'POST', body: JSON.stringify(payload) });
+          const d = await res.json();
+          if (d.success) { ok++; if (d.account?.id) newIds.push(d.account.id); }
+          else fail++;
+        } catch { fail++; }
+        continue;
+      }
       if (!item.refreshToken) { fail++; continue; }
       const EXTERNAL_IDP = ['external_idp','azuread','azure','entra','entra-id','microsoft','m365','office365','external'];
       let authMethod = (item.authMethod || '').toLowerCase();
@@ -3699,6 +3764,31 @@
     if (skipped > 0) msg += t('credentials.lineParseSkipped', skipped);
     toastPrimary(msg, { duration: 5200 });
     newIds.forEach(autoRefreshNewAccount);
+  }
+  async function addApiKeyAccount() {
+    const kiroApiKey = $('apiKeyValue').value.trim();
+    if (!kiroApiKey) return toastWarning(t('apiKey.missing'));
+    const payload = {
+      kiroApiKey,
+      authMethod: 'api_key',
+      email: $('apiKeyEmail').value.trim(),
+      region: $('apiKeyRegion').value.trim() || 'us-east-1',
+      enabled: true
+    };
+    try {
+      const res = await api('/accounts', { method: 'POST', body: JSON.stringify(payload) });
+      const d = await res.json();
+      if (!res.ok || !d.success) {
+        toastError(t('common.failed') + ': ' + (d.error || ''));
+        return;
+      }
+      closeModal();
+      loadAccounts();
+      loadStats();
+      toastPrimary(t('apiKey.added'));
+    } catch (e) {
+      toastError(t('common.failed') + ': ' + (e.message || ''));
+    }
   }
   function parseLineCredentials(text) {
     const items = [];

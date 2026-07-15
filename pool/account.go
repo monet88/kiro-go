@@ -37,9 +37,9 @@ type routeSampleKind uint8
 
 const (
 	routeSampleProcessed routeSampleKind = iota // successfully acquired a route slot
-	routeSampleEnqueued                          // had to wait in the queue at least once
-	routeSampleRejected                          // rejected because the queue was full
-	routeSampleTimeout                           // timed out while waiting in the queue
+	routeSampleEnqueued                         // had to wait in the queue at least once
+	routeSampleRejected                         // rejected because the queue was full
+	routeSampleTimeout                          // timed out while waiting in the queue
 )
 
 // routeSample is a single routing-decision event with the gauge snapshot taken
@@ -287,6 +287,9 @@ func hasRefreshToken(acc config.Account) bool {
 }
 
 func canRouteByToken(acc config.Account, now time.Time) bool {
+	if acc.IsApiKeyCredential() {
+		return strings.TrimSpace(acc.KiroApiKey) != "" && strings.TrimSpace(acc.AccessToken) != ""
+	}
 	return !needsTokenRefresh(acc, now) || hasRefreshToken(acc)
 }
 
@@ -310,6 +313,9 @@ func copyAccount(acc *config.Account) *config.Account {
 // plenty of overage headroom (e.g. 3118/1000 subscription == 312%, yet only
 // 28% of a 1000+10000 total budget) from being treated as full.
 func effectiveUsageFraction(acc config.Account, allowOverUsage bool) float64 {
+	if acc.IsApiKeyCredential() {
+		return 0
+	}
 	if acc.UsageLimit <= 0 {
 		return 0 // unknown / unlimited → treat as empty
 	}
@@ -323,11 +329,12 @@ func effectiveUsageFraction(acc config.Account, allowOverUsage bool) float64 {
 // subscriptionTierRank returns a bonus that biases candidateOrderLocked
 // toward free-tier accounts so they are consumed before paid subscriptions.
 // The bonus is large enough (2.0) to dominate the 0..1 usage-fraction range.
-//   FREE      → +2.0  (consume first)
-//   (unknown) → +1.0  (neutral — no subscription info yet)
-//   PRO       →  0.0
-//   PRO_PLUS  → -1.0
-//   POWER     → -2.0  (consume last)
+//
+//	FREE      → +2.0  (consume first)
+//	(unknown) → +1.0  (neutral — no subscription info yet)
+//	PRO       →  0.0
+//	PRO_PLUS  → -1.0
+//	POWER     → -2.0  (consume last)
 func subscriptionTierRank(subscriptionType string) float64 {
 	switch strings.ToUpper(strings.TrimSpace(subscriptionType)) {
 	case "FREE":
@@ -1137,7 +1144,11 @@ func (p *AccountPool) RoutingStatsWindow(window time.Duration, now time.Time) ma
 func (p *AccountPool) computeHealthScoreLocked(acc *config.Account, requests int, quotaErrors int, rate429 float64, now time.Time) int {
 	score := 55
 	score += subscriptionRank(*acc) * 6
-	score += minInt(20, int((1.0-acc.UsagePercent)*20))
+	usagePercent := acc.UsagePercent
+	if acc.IsApiKeyCredential() {
+		usagePercent = 0
+	}
+	score += minInt(20, int((1.0-usagePercent)*20))
 	score += minInt(8, effectiveWeight(acc.Weight)-1)
 	score -= p.errorCounts[acc.ID] * 12
 	score -= int(rate429 * 45)
@@ -1361,6 +1372,10 @@ func (p *AccountPool) UpdateToken(id, accessToken, refreshToken string, expiresA
 	defer p.mu.Unlock()
 	for i := range p.accounts {
 		if p.accounts[i].ID == id {
+			if p.accounts[i].IsApiKeyCredential() {
+				config.NormalizeApiKeyCredential(&p.accounts[i])
+				continue
+			}
 			p.accounts[i].AccessToken = accessToken
 			if refreshToken != "" {
 				p.accounts[i].RefreshToken = refreshToken
@@ -1525,12 +1540,18 @@ func (p *AccountPool) GetHealthSnapshots() map[string]AccountHealthSnapshot {
 }
 
 func isOverUsageLimit(acc config.Account) bool {
+	if acc.IsApiKeyCredential() {
+		return false
+	}
 	return acc.UsageLimit > 0 && acc.UsageCurrent >= acc.UsageLimit
 }
 
 // isQuotaBlocked reports whether an over-quota account should be skipped.
 // Upstream OverageStatus=ENABLED and global allowOverUsage both keep it routable.
 func isQuotaBlocked(acc config.Account, allowOverUsage bool) bool {
+	if acc.IsApiKeyCredential() {
+		return false
+	}
 	return isOverUsageLimit(acc) && !isUpstreamOverageEnabled(acc) && !allowOverUsage
 }
 

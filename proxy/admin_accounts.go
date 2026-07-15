@@ -14,6 +14,11 @@ func isAccountOverageEffective(account config.Account) bool {
 	return strings.EqualFold(account.OverageStatus, "ENABLED") || (account.UsageLimit > 0 && account.UsageCurrent > account.UsageLimit)
 }
 
+func accountForAdminResponse(account config.Account) config.Account {
+	config.NormalizeApiKeyCredential(&account)
+	return account
+}
+
 func (h *Handler) apiGet429Probes(w http.ResponseWriter, r *http.Request) {
 	logs := getKiro429ProbeLogs()
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -83,6 +88,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 				coolingUntil = until
 			}
 		}
+		isApiKeyAccount := a.IsApiKeyCredential()
+		displayAccount := accountForAdminResponse(a)
 
 		result[i] = map[string]interface{}{
 			"id":                a.ID,
@@ -90,39 +97,39 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"userId":            a.UserId,
 			"nickname":          a.Nickname,
 			"authMethod":        a.AuthMethod,
-			"isApiKey":          a.IsApiKeyCredential(),
+			"isApiKeyAccount":   isApiKeyAccount,
 			"provider":          a.Provider,
 			"region":            a.Region,
 			"enabled":           a.Enabled,
 			"banStatus":         a.BanStatus,
 			"banReason":         a.BanReason,
 			"banTime":           a.BanTime,
-			"expiresAt":         a.ExpiresAt,
+			"expiresAt":         displayAccount.ExpiresAt,
 			"hasToken":          a.AccessToken != "",
-			"hasRefreshToken":   a.RefreshToken != "",
+			"hasRefreshToken":   displayAccount.RefreshToken != "",
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
-			"overageStatus":     a.OverageStatus,
-			"overageEffective":  isAccountOverageEffective(a),
-			"overageCapability": a.OverageCapability,
-			"overageCap":        a.OverageCap,
-			"overageRate":       a.OverageRate,
-			"currentOverages":   a.CurrentOverages,
-			"overageCheckedAt":  a.OverageCheckedAt,
+			"overageStatus":     displayAccount.OverageStatus,
+			"overageEffective":  isAccountOverageEffective(displayAccount),
+			"overageCapability": displayAccount.OverageCapability,
+			"overageCap":        displayAccount.OverageCap,
+			"overageRate":       displayAccount.OverageRate,
+			"currentOverages":   displayAccount.CurrentOverages,
+			"overageCheckedAt":  displayAccount.OverageCheckedAt,
 			"proxyURL":          a.ProxyURL,
 			"subscriptionType":  a.SubscriptionType,
 			"subscriptionTitle": a.SubscriptionTitle,
 			"daysRemaining":     a.DaysRemaining,
-			"usageCurrent":      a.UsageCurrent,
-			"usageLimit":        a.UsageLimit,
-			"usagePercent":      a.UsagePercent,
-			"nextResetDate":     a.NextResetDate,
-			"lastRefresh":       a.LastRefresh,
-			"trialUsageCurrent": a.TrialUsageCurrent,
-			"trialUsageLimit":   a.TrialUsageLimit,
-			"trialUsagePercent": a.TrialUsagePercent,
-			"trialStatus":       a.TrialStatus,
-			"trialExpiresAt":    a.TrialExpiresAt,
+			"usageCurrent":      displayAccount.UsageCurrent,
+			"usageLimit":        displayAccount.UsageLimit,
+			"usagePercent":      displayAccount.UsagePercent,
+			"nextResetDate":     displayAccount.NextResetDate,
+			"lastRefresh":       displayAccount.LastRefresh,
+			"trialUsageCurrent": displayAccount.TrialUsageCurrent,
+			"trialUsageLimit":   displayAccount.TrialUsageLimit,
+			"trialUsagePercent": displayAccount.TrialUsagePercent,
+			"trialStatus":       displayAccount.TrialStatus,
+			"trialExpiresAt":    displayAccount.TrialExpiresAt,
 			"requestCount":      stats.RequestCount,
 			"errorCount":        stats.ErrorCount,
 			"totalTokens":       stats.TotalTokens,
@@ -158,6 +165,11 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	// normalizes what it persists, but the copy below drives the model-fetch guard and
 	// response): AuthMethod→api_key and AccessToken mirrored from KiroApiKey (ADR-0002).
 	config.NormalizeApiKeyCredential(&account)
+	if err := config.ValidateApiKeyCredential(account); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 
 	if err := config.AddAccount(account); err != nil {
 		w.WriteHeader(500)
@@ -275,6 +287,11 @@ func (h *Handler) apiGetAccountOverage(w http.ResponseWriter, r *http.Request, i
 		json.NewEncoder(w).Encode(map[string]string{"error": "Account not found"})
 		return
 	}
+	if account.IsApiKeyCredential() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Overages are not supported for an API-key Account"})
+		return
+	}
 
 	snap, err := FetchOverageStatus(account)
 	if err != nil {
@@ -353,6 +370,28 @@ func (h *Handler) apiSetAccountOverage(w http.ResponseWriter, r *http.Request, i
 	})
 }
 
+func (h *Handler) refreshAccountTokenIfNeeded(account *config.Account) error {
+	if account == nil || account.IsApiKeyCredential() || account.RefreshToken == "" {
+		return nil
+	}
+	newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
+	if err != nil {
+		return err
+	}
+	account.AccessToken = newAccessToken
+	if newRefreshToken != "" {
+		account.RefreshToken = newRefreshToken
+	}
+	account.ExpiresAt = newExpiresAt
+	config.UpdateAccountToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
+	h.pool.UpdateToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
+	if profileArn != "" {
+		account.ProfileArn = profileArn
+		config.UpdateAccountProfileArn(account.ID, profileArn)
+	}
+	return nil
+}
+
 // apiBatchAccounts 批量操作账号（启用/禁用/刷新）
 func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -379,12 +418,13 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 			idSet[id] = true
 		}
 		var toRefreshModels []config.Account
+		successCount := 0
+		failCount := 0
+		matchedCount := 0
 		for _, a := range accounts {
 			if idSet[a.ID] {
-				// 记录本次从禁用→启用、且有 token 的账号
-				if enabled && !a.Enabled && a.AccessToken != "" {
-					toRefreshModels = append(toRefreshModels, a)
-				}
+				matchedCount++
+				shouldRefreshModels := enabled && !a.Enabled && a.AccessToken != ""
 				a.Enabled = enabled
 				if enabled && a.BanStatus != "" && a.BanStatus != "ACTIVE" {
 					a.BanStatus = "ACTIVE"
@@ -397,9 +437,17 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 					a.BanReason = config.OperatorDisabledReason()
 					a.BanTime = time.Now().Unix()
 				}
-				config.UpdateAccount(a.ID, a)
+				if err := config.UpdateAccount(a.ID, a); err != nil {
+					failCount++
+					continue
+				}
+				successCount++
+				if shouldRefreshModels {
+					toRefreshModels = append(toRefreshModels, a)
+				}
 			}
 		}
+		failCount += len(idSet) - matchedCount
 		h.pool.Reload()
 		// 为本次新启用的账号异步拉取模型缓存
 		for _, acc := range toRefreshModels {
@@ -410,7 +458,16 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				}
 			}(acc)
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": len(req.IDs)})
+		if failCount > 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"count":   successCount,
+				"failed":  failCount,
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": successCount})
 
 	case "refresh":
 		successCount := 0
@@ -428,22 +485,9 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				failCount++
 				continue
 			}
-			// 刷新 token
-			if account.RefreshToken != "" {
-				if newAccess, newRefresh, newExpires, profileArn, err := auth.RefreshToken(account); err == nil {
-					account.AccessToken = newAccess
-					if newRefresh != "" {
-						account.RefreshToken = newRefresh
-					}
-					account.ExpiresAt = newExpires
-					config.UpdateAccountToken(id, newAccess, newRefresh, newExpires)
-					if profileArn != "" {
-						account.ProfileArn = profileArn
-						config.UpdateAccountProfileArn(id, profileArn)
-					}
-					h.pool.UpdateToken(id, newAccess, newRefresh, newExpires)
-				}
-			}
+			// Refresh OAuth tokens only. API-key Accounts may carry stale
+			// RefreshToken data from an imported record, but never use it.
+			_ = h.refreshAccountTokenIfNeeded(account)
 			// 刷新账户信息
 			info, err := RefreshAccountInfo(account)
 			if err != nil {
@@ -553,32 +597,9 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	// 先尝试刷新 token（不管是否过期，确保 token 有效）
-	refreshTokenIfNeeded := func() error {
-		if account.RefreshToken == "" {
-			return nil
-		}
-		newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
-		if err != nil {
-			return err
-		}
-		account.AccessToken = newAccessToken
-		if newRefreshToken != "" {
-			account.RefreshToken = newRefreshToken
-		}
-		account.ExpiresAt = newExpiresAt
-		config.UpdateAccountToken(id, newAccessToken, newRefreshToken, newExpiresAt)
-		h.pool.UpdateToken(id, newAccessToken, newRefreshToken, newExpiresAt)
-		if profileArn != "" {
-			account.ProfileArn = profileArn
-			config.UpdateAccountProfileArn(id, profileArn)
-		}
-		return nil
-	}
-
 	// 检查 token 是否快过期，先刷新
 	if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
-		if err := refreshTokenIfNeeded(); err != nil {
+		if err := h.refreshAccountTokenIfNeeded(account); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Token refresh failed: " + err.Error()})
 			return
@@ -601,7 +622,7 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 
 		// 如果是 403/401，说明 token 无效，尝试刷新后重试
 		if strings.Contains(errMsg, "403") || strings.Contains(errMsg, "401") || strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "expired") {
-			if refreshErr := refreshTokenIfNeeded(); refreshErr == nil {
+			if refreshErr := h.refreshAccountTokenIfNeeded(account); refreshErr == nil {
 				// 重试
 				info, err = RefreshAccountInfo(account)
 				if err != nil {
@@ -689,10 +710,13 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 	// AccessToken. Never return the raw secret even from the "full" detail
 	// endpoint (ADR-0002): mask it and surface the masked value under kiroApiKey
 	// so the UI can show the credential kind without leaking it.
-	accessTokenField := account.AccessToken
+	displayAccount := accountForAdminResponse(*account)
+	accessTokenField := displayAccount.AccessToken
+	refreshTokenField := displayAccount.RefreshToken
 	isApiKey := account.IsApiKeyCredential()
 	if isApiKey {
-		accessTokenField = config.MaskApiKey(account.AccessToken)
+		accessTokenField = config.MaskKiroApiKey(account.AccessToken)
+		refreshTokenField = ""
 	}
 
 	// 返回完整账号信息（包含敏感字段）
@@ -702,24 +726,24 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"userId":            account.UserId,
 		"nickname":          account.Nickname,
 		"accessToken":       accessTokenField,
-		"refreshToken":      account.RefreshToken,
-		"clientId":          account.ClientID,
-		"clientSecret":      account.ClientSecret,
+		"refreshToken":      refreshTokenField,
+		"clientId":          displayAccount.ClientID,
+		"clientSecret":      displayAccount.ClientSecret,
 		"authMethod":        account.AuthMethod,
-		"isApiKey":          isApiKey,
-		"kiroApiKey":        config.MaskApiKey(account.KiroApiKey),
+		"isApiKeyAccount":   isApiKey,
+		"kiroApiKey":        config.MaskKiroApiKey(account.KiroApiKey),
 		"provider":          account.Provider,
 		"region":            account.Region,
-		"expiresAt":         account.ExpiresAt,
+		"expiresAt":         displayAccount.ExpiresAt,
 		"machineId":         account.MachineId,
 		"weight":            account.Weight,
-		"overageStatus":     account.OverageStatus,
-		"overageEffective":  isAccountOverageEffective(*account),
-		"overageCapability": account.OverageCapability,
-		"overageCap":        account.OverageCap,
-		"overageRate":       account.OverageRate,
-		"currentOverages":   account.CurrentOverages,
-		"overageCheckedAt":  account.OverageCheckedAt,
+		"overageStatus":     displayAccount.OverageStatus,
+		"overageEffective":  isAccountOverageEffective(displayAccount),
+		"overageCapability": displayAccount.OverageCapability,
+		"overageCap":        displayAccount.OverageCap,
+		"overageRate":       displayAccount.OverageRate,
+		"currentOverages":   displayAccount.CurrentOverages,
+		"overageCheckedAt":  displayAccount.OverageCheckedAt,
 		"proxyURL":          account.ProxyURL,
 		"enabled":           account.Enabled,
 		"banStatus":         account.BanStatus,
@@ -728,16 +752,16 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"subscriptionType":  account.SubscriptionType,
 		"subscriptionTitle": account.SubscriptionTitle,
 		"daysRemaining":     account.DaysRemaining,
-		"usageCurrent":      account.UsageCurrent,
-		"usageLimit":        account.UsageLimit,
-		"usagePercent":      account.UsagePercent,
-		"nextResetDate":     account.NextResetDate,
-		"lastRefresh":       account.LastRefresh,
-		"trialUsageCurrent": account.TrialUsageCurrent,
-		"trialUsageLimit":   account.TrialUsageLimit,
-		"trialUsagePercent": account.TrialUsagePercent,
-		"trialStatus":       account.TrialStatus,
-		"trialExpiresAt":    account.TrialExpiresAt,
+		"usageCurrent":      displayAccount.UsageCurrent,
+		"usageLimit":        displayAccount.UsageLimit,
+		"usagePercent":      displayAccount.UsagePercent,
+		"nextResetDate":     displayAccount.NextResetDate,
+		"lastRefresh":       displayAccount.LastRefresh,
+		"trialUsageCurrent": displayAccount.TrialUsageCurrent,
+		"trialUsageLimit":   displayAccount.TrialUsageLimit,
+		"trialUsagePercent": displayAccount.TrialUsagePercent,
+		"trialStatus":       displayAccount.TrialStatus,
+		"trialExpiresAt":    displayAccount.TrialExpiresAt,
 		"requestCount":      stats.RequestCount,
 		"errorCount":        stats.ErrorCount,
 		"totalTokens":       stats.TotalTokens,

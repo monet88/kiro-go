@@ -6,6 +6,7 @@ import (
 	accountpool "kiro-go/pool"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,6 +77,28 @@ func TestEnsureValidTokenSkipsApiKeyAccount(t *testing.T) {
 	}
 }
 
+func TestAdminRefreshTokenHelperSkipsApiKeyAccountWithStaleRefreshToken(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+	account := &config.Account{
+		ID:           "api-key",
+		AccessToken:  "ksk_static",
+		KiroApiKey:   "ksk_static",
+		AuthMethod:   "api_key",
+		RefreshToken: "stale-refresh-token",
+		ExpiresAt:    time.Now().Add(-time.Hour).Unix(),
+	}
+
+	if err := h.refreshAccountTokenIfNeeded(account); err != nil {
+		t.Fatalf("API-key Account refresh helper returned error: %v", err)
+	}
+	if account.AccessToken != "ksk_static" || account.RefreshToken != "stale-refresh-token" {
+		t.Fatalf("API-key Account credentials changed: access=%q refresh=%q", account.AccessToken, account.RefreshToken)
+	}
+}
+
 // TestResolveProfileArnSkipsApiKeyAccount verifies profile-ARN resolution is a
 // soft skip for API-key Accounts (no IDC/OAuth profile discovery), so data-plane
 // calls proceed on the default region.
@@ -94,10 +117,9 @@ func TestResolveProfileArnSkipsApiKeyAccount(t *testing.T) {
 	}
 }
 
-// TestResolveProfileArnApiKeyPrefersCachedArn verifies an API-key Account that
-// already has a ProfileArn returns it verbatim — the cached-ARN check must run
-// before the API-key skip so a provisioned profile is not discarded.
-func TestResolveProfileArnApiKeyPrefersCachedArn(t *testing.T) {
+// TestResolveProfileArnApiKeyIgnoresCachedArn verifies stale OAuth profile
+// metadata is never used by an API-key Account.
+func TestResolveProfileArnApiKeyIgnoresCachedArn(t *testing.T) {
 	const arn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEF"
 	account := &config.Account{
 		ID:         "apikey-1",
@@ -106,11 +128,40 @@ func TestResolveProfileArnApiKeyPrefersCachedArn(t *testing.T) {
 		ProfileArn: arn,
 	}
 	got, err := ResolveProfileArn(account)
-	if err != nil {
-		t.Fatalf("expected cached ARN, got error %v", err)
+	if err == nil || !isProfileArnResolutionSoftError(err) {
+		t.Fatalf("expected soft API-key profile skip, got value=%q error=%v", got, err)
 	}
-	if got != arn {
-		t.Fatalf("expected cached ARN %q, got %q", arn, got)
+	if got != "" {
+		t.Fatalf("expected stale profile ARN to be ignored, got %q", got)
+	}
+}
+
+func TestRefreshAccountInfoSkipsApiKeyUsageLookup(t *testing.T) {
+	account := &config.Account{
+		ID:                "api-key",
+		Email:             "ops@example.com",
+		AccessToken:       "ksk_static",
+		KiroApiKey:        "ksk_static",
+		AuthMethod:        "api_key",
+		Enabled:           true,
+		SubscriptionType:  "PRO",
+		SubscriptionTitle: "Kiro Pro",
+		UsageCurrent:      12,
+		UsageLimit:        100,
+	}
+
+	info, err := RefreshAccountInfo(account)
+	if err != nil {
+		t.Fatalf("RefreshAccountInfo returned error for API-key Account: %v", err)
+	}
+	if info.Email != account.Email || info.SubscriptionType != account.SubscriptionType {
+		t.Fatalf("API-key Account identity/subscription metadata was not preserved: %+v", info)
+	}
+	if info.UsageCurrent != 0 || info.UsageLimit != 0 || info.UsagePercent != 0 || info.NextResetDate != "" || info.LastRefresh != 0 || info.TrialUsageCurrent != 0 || info.TrialUsageLimit != 0 || info.TrialUsagePercent != 0 || info.TrialStatus != "" || info.TrialExpiresAt != 0 {
+		t.Fatalf("API-key Account refresh returned unsupported usage metadata: %+v", info)
+	}
+	if !account.Enabled || account.BanStatus != "" {
+		t.Fatalf("API-key Account was disabled during metadata refresh: %+v", account)
 	}
 }
 
@@ -150,6 +201,95 @@ func TestApiAddAccountApiKeyDualWrite(t *testing.T) {
 	}
 }
 
+func TestApiAddAccountApiKeyRequiresSecret(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts", strings.NewReader(`{"authMethod":"api_key","email":"missing@example.com","enabled":true}`))
+	rec := httptest.NewRecorder()
+	h.apiAddAccount(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing secret, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(config.GetAccounts()) != 0 {
+		t.Fatalf("API-key Account without a secret was persisted: %+v", config.GetAccounts())
+	}
+}
+
+func TestApiAddAccountRejectsMaskedApiKey(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts", strings.NewReader(`{"authMethod":"api_key","kiroApiKey":"ksk_ve****7890","enabled":true}`))
+	rec := httptest.NewRecorder()
+	h.apiAddAccount(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a masked Kiro API Key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(config.GetAccounts()) != 0 {
+		t.Fatalf("masked credential was persisted: %+v", config.GetAccounts())
+	}
+}
+
+func TestApiAddAccountDoesNotAcceptAccessTokenAlias(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts", strings.NewReader(`{"authMethod":"api_key","accessToken":"ksk_alias","enabled":true}`))
+	rec := httptest.NewRecorder()
+	h.apiAddAccount(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when add-one omits KiroApiKey, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestApiGetAccountsHidesApiKeyOAuthMetadata(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{
+		ID:           "api-key",
+		KiroApiKey:   "ksk_static",
+		AuthMethod:   "api_key",
+		RefreshToken: "stale-refresh",
+		ExpiresAt:    time.Now().Add(-time.Hour).Unix(),
+		Enabled:      true,
+	}); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+	h.pool.Reload()
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/accounts", nil)
+	rec := httptest.NewRecorder()
+	h.apiGetAccounts(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var accounts []map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accounts); err != nil {
+		t.Fatalf("decode accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("accounts count = %d, want 1", len(accounts))
+	}
+	if got, _ := accounts[0]["hasRefreshToken"].(bool); got {
+		t.Fatal("API-key Account list entry advertised a refresh token")
+	}
+	if got, _ := accounts[0]["expiresAt"].(float64); got != 0 {
+		t.Fatalf("API-key Account expiresAt = %v, want 0", got)
+	}
+}
+
 // TestApiImportCredentialsApiKeyAccount verifies the import-one path creates an
 // API-key Account without any OAuth refresh round-trip and honors the dual-write.
 func TestApiImportCredentialsApiKeyAccount(t *testing.T) {
@@ -178,6 +318,45 @@ func TestApiImportCredentialsApiKeyAccount(t *testing.T) {
 	}
 }
 
+func TestApiImportCredentialsApiKeyAcceptsAccessTokenAlias(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+
+	body := `{"accessToken":"ksk_legacy","authMethod":"api_key","email":"legacy@example.com"}`
+	req := httptest.NewRequest("POST", "/admin/api/credentials", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.apiImportCredentials(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apiImportCredentials status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	acc := findProxyAccount(t, "legacy@example.com")
+	if acc.KiroApiKey != "ksk_legacy" || acc.AccessToken != "ksk_legacy" {
+		t.Fatalf("legacy accessToken alias was not normalized: %+v", acc)
+	}
+}
+
+func TestApiImportCredentialsRejectsMaskedApiKey(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+
+	body := `{"accessToken":"ksk_ve****7890","authMethod":"api_key","email":"masked@example.com"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/credentials", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.apiImportCredentials(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a masked Kiro API Key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(config.GetAccounts()) != 0 {
+		t.Fatalf("masked credential was persisted: %+v", config.GetAccounts())
+	}
+}
+
 // TestApiImportCredentialsApiKeyRequiresSecret verifies the import path rejects an
 // api_key request that carries neither kiroApiKey nor accessToken.
 func TestApiImportCredentialsApiKeyRequiresSecret(t *testing.T) {
@@ -203,7 +382,32 @@ func TestApiGetAccountFullMasksApiKey(t *testing.T) {
 		t.Fatalf("config.Init: %v", err)
 	}
 	const secret = "ksk_verylongsecretvalue1234567890"
-	if err := config.AddAccount(config.Account{ID: "a1", KiroApiKey: secret, AuthMethod: "api_key", Enabled: true}); err != nil {
+	if err := config.AddAccount(config.Account{
+		ID:                "a1",
+		KiroApiKey:        secret,
+		AuthMethod:        "api_key",
+		RefreshToken:      "stale-refresh",
+		ClientID:          "stale-client",
+		ClientSecret:      "stale-secret",
+		ExpiresAt:         time.Now().Add(-time.Hour).Unix(),
+		OverageStatus:     "ENABLED",
+		OverageCapability: "OVERAGE_CAPABLE",
+		OverageCap:        1000,
+		OverageRate:       2,
+		CurrentOverages:   50,
+		OverageCheckedAt:  time.Now().Unix(),
+		UsageCurrent:      120,
+		UsageLimit:        100,
+		UsagePercent:      1.2,
+		NextResetDate:     "2099-01-01",
+		LastRefresh:       time.Now().Unix(),
+		TrialUsageCurrent: 5,
+		TrialUsageLimit:   10,
+		TrialUsagePercent: 0.5,
+		TrialStatus:       "ACTIVE",
+		TrialExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		Enabled:           true,
+	}); err != nil {
 		t.Fatalf("AddAccount: %v", err)
 	}
 	h := &Handler{pool: accountpool.GetPool()}
@@ -221,14 +425,36 @@ func TestApiGetAccountFullMasksApiKey(t *testing.T) {
 	if got, _ := resp["accessToken"].(string); got == secret || strings.Contains(rec.Body.String(), secret) {
 		t.Fatalf("raw secret leaked in detail payload: %s", rec.Body.String())
 	}
-	if got, _ := resp["accessToken"].(string); got != config.MaskApiKey(secret) {
-		t.Fatalf("accessToken not masked: got %q want %q", got, config.MaskApiKey(secret))
+	if got, _ := resp["accessToken"].(string); got != config.MaskKiroApiKey(secret) {
+		t.Fatalf("accessToken not masked: got %q want %q", got, config.MaskKiroApiKey(secret))
 	}
-	if got, _ := resp["kiroApiKey"].(string); got != config.MaskApiKey(secret) {
-		t.Fatalf("kiroApiKey not masked: got %q want %q", got, config.MaskApiKey(secret))
+	if got, _ := resp["kiroApiKey"].(string); got != config.MaskKiroApiKey(secret) {
+		t.Fatalf("kiroApiKey not masked: got %q want %q", got, config.MaskKiroApiKey(secret))
 	}
-	if isKey, _ := resp["isApiKey"].(bool); !isKey {
-		t.Fatalf("expected isApiKey=true in detail payload")
+	if got, _ := resp["refreshToken"].(string); got != "" {
+		t.Fatalf("API-key Account refreshToken leaked in detail payload: %q", got)
+	}
+	if got, _ := resp["clientId"].(string); got != "" {
+		t.Fatalf("API-key Account clientId leaked in detail payload: %q", got)
+	}
+	if got, _ := resp["clientSecret"].(string); got != "" {
+		t.Fatalf("API-key Account clientSecret leaked in detail payload: %q", got)
+	}
+	if isKey, _ := resp["isApiKeyAccount"].(bool); !isKey {
+		t.Fatalf("expected isApiKeyAccount=true in detail payload")
+	}
+	for _, field := range []string{"expiresAt", "overageCap", "overageRate", "currentOverages", "overageCheckedAt", "usageCurrent", "usageLimit", "usagePercent", "lastRefresh", "trialUsageCurrent", "trialUsageLimit", "trialUsagePercent", "trialExpiresAt"} {
+		if got, _ := resp[field].(float64); got != 0 {
+			t.Fatalf("API-key Account detail %s = %v, want 0", field, got)
+		}
+	}
+	for _, field := range []string{"overageStatus", "overageCapability", "nextResetDate", "trialStatus"} {
+		if got, _ := resp[field].(string); got != "" {
+			t.Fatalf("API-key Account detail %s = %q, want empty", field, got)
+		}
+	}
+	if got, _ := resp["overageEffective"].(bool); got {
+		t.Fatal("API-key Account detail advertised effective overage")
 	}
 }
 
@@ -238,7 +464,7 @@ func TestApiExportAccountsMasksApiKeyAccountSecret(t *testing.T) {
 	}
 	const apiKeySecret = "ksk_verylongsecretvalue1234567890"
 	const oauthToken = "oauth_portable_backup_token"
-	if err := config.AddAccount(config.Account{ID: "api-key", KiroApiKey: apiKeySecret, AuthMethod: "api_key", Enabled: true}); err != nil {
+	if err := config.AddAccount(config.Account{ID: "api-key", KiroApiKey: apiKeySecret, AuthMethod: "api_key", RefreshToken: "stale-refresh", Enabled: true}); err != nil {
 		t.Fatalf("AddAccount API-key Account: %v", err)
 	}
 	if err := config.AddAccount(config.Account{ID: "oauth", AccessToken: oauthToken, AuthMethod: "social", Enabled: true}); err != nil {
@@ -260,7 +486,8 @@ func TestApiExportAccountsMasksApiKeyAccountSecret(t *testing.T) {
 		Accounts []struct {
 			ID          string `json:"id"`
 			Credentials struct {
-				AccessToken string `json:"accessToken"`
+				AccessToken  string `json:"accessToken"`
+				RefreshToken string `json:"refreshToken"`
 			} `json:"credentials"`
 		} `json:"accounts"`
 	}
@@ -271,11 +498,16 @@ func TestApiExportAccountsMasksApiKeyAccountSecret(t *testing.T) {
 	for _, account := range response.Accounts {
 		accessTokens[account.ID] = account.Credentials.AccessToken
 	}
-	if got := accessTokens["api-key"]; got != config.MaskApiKey(apiKeySecret) {
-		t.Fatalf("API-key Account accessToken = %q, want masked value %q", got, config.MaskApiKey(apiKeySecret))
+	if got := accessTokens["api-key"]; got != config.MaskKiroApiKey(apiKeySecret) {
+		t.Fatalf("API-key Account accessToken = %q, want masked value %q", got, config.MaskKiroApiKey(apiKeySecret))
 	}
 	if got := accessTokens["oauth"]; got != oauthToken {
 		t.Fatalf("OAuth Account accessToken = %q, want portable token %q", got, oauthToken)
+	}
+	for _, account := range response.Accounts {
+		if account.ID == "api-key" && account.Credentials.RefreshToken != "" {
+			t.Fatalf("API-key Account refreshToken leaked in export: %q", account.Credentials.RefreshToken)
+		}
 	}
 }
 
@@ -297,6 +529,70 @@ func TestApiSetAccountOverageRejectsApiKeyAccount(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Overages cannot be toggled for an API-key Account") {
 		t.Fatalf("expected clear unsupported-operation error, got %s", rec.Body.String())
+	}
+}
+
+func TestApiGetAccountOverageRejectsApiKeyAccount(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{ID: "api-key", KiroApiKey: "ksk_static", AuthMethod: "api_key", Enabled: true}); err != nil {
+		t.Fatalf("AddAccount API-key Account: %v", err)
+	}
+
+	h := &Handler{pool: accountpool.GetPool()}
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/accounts/api-key/overage", nil)
+	rec := httptest.NewRecorder()
+	h.apiGetAccountOverage(rec, req, "api-key")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Overages are not supported for an API-key Account") {
+		t.Fatalf("expected clear unsupported-operation error, got %s", rec.Body.String())
+	}
+}
+
+func TestApiBatchEnableReportsQuarantinedApiKeyAccountFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"password":"x","port":8089,"accounts":[{"id":"quarantined","authMethod":"api_key","accessToken":"ksk_ab****7890","enabled":true}]}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	if err := config.Init(path); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+
+	h := &Handler{pool: accountpool.GetPool()}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/batch", strings.NewReader(`{"action":"enable","ids":["quarantined"]}`))
+	rec := httptest.NewRecorder()
+	h.apiBatchAccounts(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	var resp struct {
+		Success bool `json:"success"`
+		Count   int  `json:"count"`
+		Failed  int  `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Success || resp.Count != 0 || resp.Failed != 1 {
+		t.Fatalf("unexpected batch response: %+v", resp)
+	}
+	account := config.GetAccounts()[0]
+	if account.Enabled || account.KiroApiKey != "" || account.AccessToken != "" {
+		t.Fatalf("quarantined account was enabled or restored: %+v", account)
+	}
+}
+
+func TestFetchOverageStatusRejectsApiKeyAccountBeforeNetwork(t *testing.T) {
+	account := &config.Account{ID: "api-key", KiroApiKey: "ksk_static", AuthMethod: "api_key"}
+
+	if _, err := FetchOverageStatus(account); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected API-key Account overage rejection, got %v", err)
 	}
 }
 

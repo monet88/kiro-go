@@ -431,6 +431,69 @@ func TestGetNextSkipsExpiredAccountWithoutRefreshToken(t *testing.T) {
 	}
 }
 
+func TestGetNextAllowsExpiredApiKeyAccount(t *testing.T) {
+	p := &AccountPool{}
+	p.accounts = []config.Account{{
+		ID:           "api-key",
+		AccessToken:  "ksk_static",
+		KiroApiKey:   "ksk_static",
+		AuthMethod:   "api_key",
+		RefreshToken: "stale-refresh-token",
+		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+	}}
+
+	got := p.GetNext()
+	if got == nil {
+		t.Fatal("expected expired API-key Account to remain routable")
+	}
+	if got.ID != "api-key" {
+		t.Fatalf("expected API-key Account, got %q", got.ID)
+	}
+}
+
+func TestGetNextSkipsApiKeyAccountWithoutSecret(t *testing.T) {
+	p := &AccountPool{}
+	p.accounts = []config.Account{{ID: "api-key", AuthMethod: "api_key"}}
+
+	if got := p.GetNext(); got != nil {
+		t.Fatalf("expected API-key Account without a secret to be skipped, got %#v", got)
+	}
+}
+
+func TestApiKeyAccountIgnoresLegacyQuotaCache(t *testing.T) {
+	account := config.Account{
+		ID:           "api-key",
+		AccessToken:  "ksk_static",
+		KiroApiKey:   "ksk_static",
+		AuthMethod:   "api_key",
+		UsageCurrent: 100,
+		UsageLimit:   100,
+	}
+	if isQuotaBlocked(account, false) {
+		t.Fatal("API-key Account must not be blocked by unsupported legacy quota metadata")
+	}
+}
+
+func TestUpdateTokenDoesNotClobberApiKeyAccount(t *testing.T) {
+	p := &AccountPool{}
+	p.accounts = []config.Account{{
+		ID:          "api-key",
+		AccessToken: "ksk_static",
+		KiroApiKey:  "ksk_static",
+		AuthMethod:  "api_key",
+	}}
+
+	p.UpdateToken("api-key", "oauth-access", "oauth-refresh", time.Now().Add(time.Hour).Unix())
+
+	got := p.accounts[0]
+	if got.AccessToken != "ksk_static" || got.KiroApiKey != "ksk_static" {
+		t.Fatalf("API-key Account bearer was clobbered: %+v", got)
+	}
+	if got.RefreshToken != "" || got.ExpiresAt != 0 {
+		t.Fatalf("OAuth token metadata was written to API-key Account: %+v", got)
+	}
+}
+
 func TestAvailableCountMatchesRealRoutingConstraints(t *testing.T) {
 	initPoolTestConfig(t)
 	if err := config.UpdateAllowOverUsage(false); err != nil {
@@ -727,6 +790,17 @@ func TestBalanceModeAggressivePrefersMostUtilizedWithHeadroom(t *testing.T) {
 	}
 }
 
+func TestBalanceModeAggressiveIgnoresApiKeyUsageMetadata(t *testing.T) {
+	initPoolTestConfig(t)
+	if err := config.UpdateBalanceMode("aggressive"); err != nil {
+		t.Fatalf("set balance mode: %v", err)
+	}
+	apiKey := config.Account{ID: "api-key", KiroApiKey: "ksk_static", AccessToken: "ksk_static", AuthMethod: "api_key", UsageCurrent: 900, UsageLimit: 1000, UsagePercent: 0.9}
+	if got := effectiveUsageFraction(apiKey, false); got != 0 {
+		t.Fatalf("API-key usage fraction = %v, want 0", got)
+	}
+}
+
 // TestBalanceModeAggressiveUsesTotalBudgetWithOverage proves fullness is
 // measured against the total budget (subscription + overage cap) — not the
 // subscription quota — when overage is in effect. Account "overSub" has blown
@@ -781,6 +855,19 @@ func TestBalanceModeHealthPrefersHealthiest(t *testing.T) {
 	)
 	if acc := p.GetNextForModel("model"); acc == nil || acc.ID != "healthy" {
 		t.Fatalf("health should pick the healthiest (lowest usage) account, got %#v", acc)
+	}
+}
+
+func TestBalanceModeHealthIgnoresApiKeyUsageMetadata(t *testing.T) {
+	p := newTestPool()
+	apiKey := config.Account{ID: "api-key", KiroApiKey: "ksk_static", AccessToken: "ksk_static", AuthMethod: "api_key", UsageCurrent: 1000, UsageLimit: 1000, UsagePercent: 1}
+	clean := apiKey
+	clean.UsageCurrent = 0
+	clean.UsageLimit = 0
+	clean.UsagePercent = 0
+	now := time.Now()
+	if got, want := p.computeHealthScoreLocked(&apiKey, 0, 0, 0, now), p.computeHealthScoreLocked(&clean, 0, 0, 0, now); got != want {
+		t.Fatalf("API-key health score changed by stale usage metadata: got %d want %d", got, want)
 	}
 }
 

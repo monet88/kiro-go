@@ -430,13 +430,18 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 	// authMethod of api_key/apikey (secret then supplied in accessToken) and
 	// short-circuit the OAuth import path entirely. config.AddAccount enforces the
 	// dual-write (AccessToken == KiroApiKey) and canonical AuthMethod.
-	if kiroKey := strings.TrimSpace(req.KiroApiKey); kiroKey != "" || isApiKeyAuthMethod(req.AuthMethod) {
+	if kiroKey := strings.TrimSpace(req.KiroApiKey); kiroKey != "" || config.IsApiKeyAuthMethod(req.AuthMethod) {
 		if kiroKey == "" {
 			kiroKey = strings.TrimSpace(req.AccessToken)
 		}
 		if kiroKey == "" {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": "kiroApiKey (or accessToken) is required for an API-key account"})
+			return
+		}
+		if strings.Contains(kiroKey, "*") {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "masked Kiro API Keys cannot be imported"})
 			return
 		}
 		if req.Region == "" {
@@ -663,17 +668,6 @@ var externalIdpAuthMethodAliases = map[string]bool{
 //   - empty authMethod, no clientId                   -> social
 //   - "enterprise" (Kiro Account Manager IdC label)   -> idc
 //   - unrecognized non-empty + clientId+clientSecret  -> idc, else social
-// isApiKeyAuthMethod reports whether a pasted credential JSON's authMethod names
-// an API-key Account (api_key/apikey, case-insensitive). Used by import to route
-// to the API-key branch before the OAuth refresh path (ADR-0002).
-func isApiKeyAuthMethod(authMethod string) bool {
-	switch strings.ToLower(strings.TrimSpace(authMethod)) {
-	case "api_key", "apikey":
-		return true
-	}
-	return false
-}
-
 func normalizeImportAuthMethod(authMethod, clientID, clientSecret, tokenEndpoint string) string {
 	am := strings.ToLower(strings.TrimSpace(authMethod))
 	switch {

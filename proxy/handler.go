@@ -194,27 +194,12 @@ func (h *Handler) refreshAllAccounts() {
 // it only mutates its own *account (a distinct slice element) and the config/pool
 // helpers it calls lock internally.
 func (h *Handler) refreshOneAccount(account *config.Account) {
-	// API-key Accounts (ADR-0002) have no OAuth refresh material and a static
-	// bearer that does not expire from our side. Skip the token-refresh step so
-	// the background sweep neither fails nor rotates the static key; still refresh
-	// usage/subscription info below via RefreshAccountInfo.
-	if account.IsApiKeyCredential() {
-		info, err := RefreshAccountInfo(account)
-		if err != nil {
-			logger.Warnf("[BackgroundRefresh] Failed to refresh %s: %v", account.Email, err)
-			return
-		}
-		config.UpdateAccountInfo(account.ID, *info)
-		h.refreshAccountOverageIfExceeded(account, info)
-		logger.Infof("[BackgroundRefresh] Refreshed %s: %s %.1f/%.1f", account.Email, info.SubscriptionType, info.UsageCurrent, info.UsageLimit)
-		return
-	}
-
 	// Refresh the token when it is due to expire OR entirely missing. The
 	// missing case activates imported accounts that arrived with only a refresh
 	// token.
-	needsToken := account.AccessToken == "" ||
-		(account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds)
+	needsToken := !account.IsApiKeyCredential() &&
+		(account.AccessToken == "" ||
+			account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds)
 	if needsToken {
 		newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
 		if err != nil {

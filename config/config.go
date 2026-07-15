@@ -205,7 +205,15 @@ func Load() error {
 			continue
 		}
 		before := cfg.Accounts[i]
+		if cfg.Accounts[i].KiroApiKey == "" {
+			cfg.Accounts[i].KiroApiKey = cfg.Accounts[i].AccessToken
+		}
 		NormalizeApiKeyCredential(&cfg.Accounts[i])
+		if err := ValidateApiKeyCredential(cfg.Accounts[i]); err != nil {
+			cfg.Accounts[i].KiroApiKey = ""
+			cfg.Accounts[i].AccessToken = ""
+			cfg.Accounts[i].Enabled = false
+		}
 		if cfg.Accounts[i] != before {
 			apiKeyRepaired = true
 		}
