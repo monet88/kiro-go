@@ -197,8 +197,9 @@ func (h *Handler) refreshOneAccount(account *config.Account) {
 	// Refresh the token when it is due to expire OR entirely missing. The
 	// missing case activates imported accounts that arrived with only a refresh
 	// token.
-	needsToken := account.AccessToken == "" ||
-		(account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds)
+	needsToken := !account.IsApiKeyCredential() &&
+		(account.AccessToken == "" ||
+			account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds)
 	if needsToken {
 		newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
 		if err != nil {

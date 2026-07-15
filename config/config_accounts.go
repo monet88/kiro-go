@@ -1,6 +1,100 @@
 package config
 
-import "time"
+import (
+	"errors"
+	"strings"
+	"time"
+)
+
+// apiKeyAuthMethod is the canonical AuthMethod value for an API-key Account.
+const apiKeyAuthMethod = "api_key"
+
+// IsApiKeyAuthMethod reports whether an AuthMethod identifies an API-key
+// Account. Keep this classifier in config so import and account logic share the
+// same api_key/apikey semantics.
+func IsApiKeyAuthMethod(authMethod string) bool {
+	switch strings.ToLower(strings.TrimSpace(authMethod)) {
+	case "api_key", "apikey":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsApiKeyCredential reports whether this Account authenticates with a static
+// Kiro API Key (ksk_…) rather than an OAuth-style credential. It is true when
+// KiroApiKey is set OR AuthMethod is api_key/apikey (case-insensitive). API-key
+// Accounts skip OAuth refresh and profile-ARN resolution and send their bearer
+// with the API_KEY token type (ADR-0002).
+func (a Account) IsApiKeyCredential() bool {
+	if strings.TrimSpace(a.KiroApiKey) != "" {
+		return true
+	}
+	return IsApiKeyAuthMethod(a.AuthMethod)
+}
+
+// NormalizeApiKeyCredential enforces the API-key Account invariants on write
+// (ADR-0002): AuthMethod is canonicalized to "api_key", AccessToken is mirrored
+// from the KiroApiKey source of truth, and OAuth-only metadata is removed.
+// Legacy accessToken-only records are repaired explicitly during Load; new
+// AddAccount and UpdateAccount calls must provide KiroApiKey.
+func NormalizeApiKeyCredential(a *Account) {
+	if a == nil || !a.IsApiKeyCredential() {
+		return
+	}
+	a.AuthMethod = apiKeyAuthMethod
+	a.AccessToken = a.KiroApiKey
+	a.RefreshToken = ""
+	a.ClientID = ""
+	a.ClientSecret = ""
+	a.StartUrl = ""
+	a.ExpiresAt = 0
+	a.ProfileArn = ""
+	a.TokenEndpoint = ""
+	a.IssuerURL = ""
+	a.Scopes = ""
+	a.OverageStatus = ""
+	a.OverageCapability = ""
+	a.OverageCap = 0
+	a.OverageRate = 0
+	a.CurrentOverages = 0
+	a.OverageCheckedAt = 0
+	a.UsageCurrent = 0
+	a.UsageLimit = 0
+	a.UsagePercent = 0
+	a.NextResetDate = ""
+	a.LastRefresh = 0
+	a.TrialUsageCurrent = 0
+	a.TrialUsageLimit = 0
+	a.TrialUsagePercent = 0
+	a.TrialStatus = ""
+	a.TrialExpiresAt = 0
+}
+
+func ValidateApiKeyCredential(account Account) error {
+	if !account.IsApiKeyCredential() {
+		return nil
+	}
+	apiKey := strings.TrimSpace(account.KiroApiKey)
+	if apiKey == "" {
+		return errors.New("Kiro API Key is required for API-key Accounts")
+	}
+	if strings.Contains(apiKey, "*") {
+		return errors.New("masked Kiro API Key cannot be used as a credential")
+	}
+	return nil
+}
+
+// MaskKiroApiKey masks static account credentials even when they are short.
+func MaskKiroApiKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 20 {
+		return strings.Repeat("*", len(key))
+	}
+	return key[:6] + "****" + key[len(key)-4:]
+}
 
 func AutoQuarantineSuspicious429Reason() string {
 	return autoQuarantineSuspicious429Reason
@@ -63,6 +157,10 @@ func GetEnabledAccounts() []Account {
 func AddAccount(account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
+	NormalizeApiKeyCredential(&account)
+	if err := ValidateApiKeyCredential(account); err != nil {
+		return err
+	}
 	cfg.Accounts = append(cfg.Accounts, account)
 	return Save()
 }
@@ -71,10 +169,11 @@ func AddAccount(account Account) error {
 // with exactly one Save(), avoiding the O(n²) write amplification that calling
 // AddAccount in a loop would cause (each AddAccount re-serializes the entire
 // config.json). Accounts whose RefreshToken already exists (against the current
-// config or earlier entries in the same batch) are skipped to keep bulk imports
-// idempotent across retries/re-pastes. Entries with an empty RefreshToken are
-// also skipped — there is no stable identity to dedup on and they cannot be
-// activated later. Returns how many were added and how many were skipped.
+// config or earlier entries in the same batch) are skipped to keep OAuth bulk
+// imports idempotent across retries/re-pastes. API-key Accounts are intentionally
+// skipped because bulk API-key import is outside the MVP; use AddAccount for the
+// legitimate single-account write path. Entries without a RefreshToken are also
+// skipped. Returns how many were added and how many were skipped.
 //
 // Save() is only invoked when at least one account is actually added, so a
 // fully-duplicate batch does not churn the config file.
@@ -82,25 +181,34 @@ func AddAccounts(accounts []Account) (added int, skipped int, err error) {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 
-	// Seed the seen-set with refresh tokens already persisted so the batch
-	// dedups against existing accounts, not just within itself.
+	dedupKey := func(account Account) string {
+		if account.IsApiKeyCredential() || strings.TrimSpace(account.RefreshToken) == "" {
+			return ""
+		}
+		return "oauth\x00" + account.RefreshToken
+	}
+
+	// Seed the seen-set with credentials already persisted so the batch dedups
+	// against existing accounts, not just within itself.
 	seen := make(map[string]struct{}, len(cfg.Accounts)+len(accounts))
 	for i := range cfg.Accounts {
-		if rt := cfg.Accounts[i].RefreshToken; rt != "" {
-			seen[rt] = struct{}{}
+		if key := dedupKey(cfg.Accounts[i]); key != "" {
+			seen[key] = struct{}{}
 		}
 	}
 
 	for _, a := range accounts {
-		if a.RefreshToken == "" {
+		NormalizeApiKeyCredential(&a)
+		key := dedupKey(a)
+		if key == "" {
 			skipped++
 			continue
 		}
-		if _, dup := seen[a.RefreshToken]; dup {
+		if _, dup := seen[key]; dup {
 			skipped++
 			continue
 		}
-		seen[a.RefreshToken] = struct{}{}
+		seen[key] = struct{}{}
 		cfg.Accounts = append(cfg.Accounts, a)
 		added++
 	}
@@ -154,6 +262,10 @@ func AccountIDExists(id string) bool {
 func UpdateAccount(id string, account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
+	NormalizeApiKeyCredential(&account)
+	if err := ValidateApiKeyCredential(account); err != nil {
+		return err
+	}
 	for i, a := range cfg.Accounts {
 		if a.ID == id {
 			cfg.Accounts[i] = account
@@ -300,6 +412,17 @@ func UpdateAccountToken(id, accessToken, refreshToken string, expiresAt int64) e
 	defer cfgLock.Unlock()
 	for i, a := range cfg.Accounts {
 		if a.ID == id {
+			// An API-key Account never refreshes; KiroApiKey is the source of
+			// truth. Guard against a stray OAuth-style token write clobbering the
+			// static bearer (ADR-0002). A malformed legacy record with the secret
+			// only in AccessToken is left untouched here; Load owns that migration.
+			if cfg.Accounts[i].IsApiKeyCredential() {
+				if strings.TrimSpace(cfg.Accounts[i].KiroApiKey) == "" {
+					return errors.New("Kiro API Key is required for API-key Accounts")
+				}
+				NormalizeApiKeyCredential(&cfg.Accounts[i])
+				return Save()
+			}
 			cfg.Accounts[i].AccessToken = accessToken
 			if refreshToken != "" {
 				cfg.Accounts[i].RefreshToken = refreshToken
@@ -353,6 +476,7 @@ func UpdateAccountInfo(id string, info AccountInfo) error {
 			cfg.Accounts[i].TrialUsagePercent = info.TrialUsagePercent
 			cfg.Accounts[i].TrialStatus = info.TrialStatus
 			cfg.Accounts[i].TrialExpiresAt = info.TrialExpiresAt
+			NormalizeApiKeyCredential(&cfg.Accounts[i])
 			return Save()
 		}
 	}

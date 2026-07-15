@@ -210,8 +210,7 @@ func GenerateApiKeyValue() string {
 }
 
 // MaskApiKey produces a display-friendly masked version: keeps first 6 and last 4
-// characters, replaces the middle with "****". Returns "" for empty input and
-// the original string if it's too short to mask meaningfully.
+// characters, replaces the middle with "****", and preserves short gateway keys.
 func MaskApiKey(key string) string {
 	if key == "" {
 		return ""

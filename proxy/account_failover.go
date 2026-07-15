@@ -225,6 +225,13 @@ func (h *Handler) tryRefreshAccountAfterAuthError(account *config.Account) authR
 	if account == nil || strings.TrimSpace(account.RefreshToken) == "" {
 		return authRefreshFailed
 	}
+	// API-key Accounts (ADR-0002) have no OAuth refresh material — an auth-looking
+	// failure means the static Kiro API Key itself is bad, which a refresh cannot
+	// repair. Report failure so the caller disables it rather than attempting an
+	// OAuth round-trip that would misclassify the credential.
+	if account.IsApiKeyCredential() {
+		return authRefreshFailed
+	}
 
 	mu := h.accountRefreshLock(account.ID)
 	mu.Lock()

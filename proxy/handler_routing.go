@@ -77,6 +77,13 @@ func routingErrorMessage(err error) string {
 
 // ensureValidToken 确保 token 有效
 func (h *Handler) ensureValidToken(account *config.Account) error {
+	// API-key Accounts (ADR-0002) carry a static Kiro API Key as bearer and have
+	// no OAuth refresh material. Their token never expires from our side, so skip
+	// the refresh path entirely — attempting auth.RefreshToken would fail for lack
+	// of a refresh token and could wrongly disable an otherwise-usable account.
+	if account.IsApiKeyCredential() {
+		return nil
+	}
 	if account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds {
 		return nil
 	}

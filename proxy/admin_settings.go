@@ -580,6 +580,13 @@ func (h *Handler) apiExportAccounts(w http.ResponseWriter, r *http.Request) {
 			subType = "Pro_Plus"
 		}
 
+		accessToken := a.AccessToken
+		refreshToken := a.RefreshToken
+		if a.IsApiKeyCredential() {
+			accessToken = config.MaskKiroApiKey(a.KiroApiKey)
+			refreshToken = ""
+		}
+
 		exportAccounts = append(exportAccounts, ExportAccount{
 			ID:        a.ID,
 			Email:     a.Email,
@@ -588,9 +595,9 @@ func (h *Handler) apiExportAccounts(w http.ResponseWriter, r *http.Request) {
 			UserId:    a.UserId,
 			MachineId: a.MachineId,
 			Credentials: ExportCredentials{
-				AccessToken:  a.AccessToken,
+				AccessToken:  accessToken,
 				CsrfToken:    "",
-				RefreshToken: a.RefreshToken,
+				RefreshToken: refreshToken,
 				ClientID:     a.ClientID,
 				ClientSecret: a.ClientSecret,
 				Region:       a.Region,

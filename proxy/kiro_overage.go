@@ -52,6 +52,9 @@ func FetchOverageStatus(account *config.Account) (*OverageSnapshot, error) {
 	if account == nil {
 		return nil, fmt.Errorf("account is nil")
 	}
+	if account.IsApiKeyCredential() {
+		return nil, fmt.Errorf("Overages are not supported for an API-key Account")
+	}
 
 	rawURL := regionalizeURL(kiroQAPIBase+"/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true", account)
 	if profileArn := strings.TrimSpace(account.ProfileArn); profileArn != "" {
@@ -113,6 +116,9 @@ func FetchOverageStatus(account *config.Account) (*OverageSnapshot, error) {
 func SetOverageStatus(account *config.Account, enabled bool) (*OverageSnapshot, error) {
 	if account == nil {
 		return nil, fmt.Errorf("account is nil")
+	}
+	if account.IsApiKeyCredential() {
+		return nil, fmt.Errorf("Overages are not supported for an API-key Account")
 	}
 
 	profileArn, err := ResolveProfileArn(account)

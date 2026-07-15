@@ -414,10 +414,67 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		// userId (account-level in Kiro Account Manager exports) embeds the Azure
 		// tenant, from which tokenEndpoint/issuerUrl/scopes are derived when missing.
 		UserID string `json:"userId"`
+		// kiroApiKey imports an API-key Account (ksk_…). It is the source of truth
+		// for the static bearer and needs no refreshToken/OAuth material (ADR-0002).
+		KiroApiKey string `json:"kiroApiKey"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	// API-key Account import (ADR-0002): a static Kiro API Key is the source of
+	// truth and never refreshes, so it takes neither a refreshToken nor OAuth
+	// profile-ARN resolution. Detect it by an explicit kiroApiKey OR an
+	// authMethod of api_key/apikey (secret then supplied in accessToken) and
+	// short-circuit the OAuth import path entirely. config.AddAccount enforces the
+	// dual-write (AccessToken == KiroApiKey) and canonical AuthMethod.
+	if kiroKey := strings.TrimSpace(req.KiroApiKey); kiroKey != "" || config.IsApiKeyAuthMethod(req.AuthMethod) {
+		if kiroKey == "" {
+			kiroKey = strings.TrimSpace(req.AccessToken)
+		}
+		if kiroKey == "" {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "kiroApiKey (or accessToken) is required for an API-key account"})
+			return
+		}
+		if strings.Contains(kiroKey, "*") {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "masked Kiro API Keys cannot be imported"})
+			return
+		}
+		if req.Region == "" {
+			req.Region = "us-east-1"
+		}
+		id := req.ID
+		if id == "" || config.AccountIDExists(id) {
+			id = auth.GenerateAccountID()
+		}
+		account := config.Account{
+			ID:          id,
+			Email:       req.Email,
+			KiroApiKey:  kiroKey,
+			AccessToken: kiroKey,
+			AuthMethod:  "api_key",
+			Provider:    req.Provider,
+			Region:      req.Region,
+			Enabled:     true,
+			MachineId:   config.GenerateMachineId(),
+		}
+		if err := config.AddAccount(account); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		h.pool.Reload()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"account": map[string]interface{}{
+				"id":    account.ID,
+				"email": account.Email,
+			},
+		})
 		return
 	}
 

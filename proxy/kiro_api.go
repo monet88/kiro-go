@@ -261,6 +261,14 @@ func ResolveProfileArn(account *config.Account) (string, error) {
 	if account == nil {
 		return "", fmt.Errorf("account is nil")
 	}
+	// API-key Accounts (ADR-0002) authenticate with a static Kiro API Key and do
+	// not participate in IDC/OAuth profile discovery. Attempting ListAvailableProfiles
+	// or an OAuth refresh fallback for them is meaningless (no refresh material) and
+	// would surface as a hard error. Treat a missing profile ARN as a soft skip so
+	// data-plane calls proceed on the default region like other profileless paths.
+	if account.IsApiKeyCredential() {
+		return "", fmt.Errorf("profile ARN resolution skipped: API-key Account uses a static Kiro API Key")
+	}
 	if profileArn := strings.TrimSpace(account.ProfileArn); profileArn != "" {
 		return profileArn, nil
 	}
@@ -566,9 +574,16 @@ func setKiroHeaders(req *http.Request, account *config.Account) {
 
 // RefreshAccountInfo 刷新账户信息（使用量、订阅等）
 func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
-	info := &config.AccountInfo{
-		LastRefresh: time.Now().Unix(),
+	info := &config.AccountInfo{}
+	if account.IsApiKeyCredential() {
+		info.Email = account.Email
+		info.UserId = account.UserId
+		info.SubscriptionType = account.SubscriptionType
+		info.SubscriptionTitle = account.SubscriptionTitle
+		info.DaysRemaining = account.DaysRemaining
+		return info, nil
 	}
+	info.LastRefresh = time.Now().Unix()
 
 	// 获取使用量和订阅信息
 	usage, err := GetUsageLimits(account)
