@@ -1,0 +1,131 @@
+proxy/admin_auth.go
+  s_7752dcb8dbf840::t_cb09182d07322b 442-446
+  s_7752dcb8dbf840::t_5f579d83b8ffc2 433
+pool/account.go
+  s_7752dcb8dbf840::t_ce21d360eeb68f 332-337
+  s_7752dcb8dbf840::t_257721dd5f0589 316-318,1147-1151,1543-1545
+  s_7752dcb8dbf840::t_8815ddad603902 291
+  s_7752dcb8dbf840::t_2d20ba36d4a825 1552-1554
+  s_7752dcb8dbf840::t_d37453a4dae6ca 40-42,290,292
+  s_7752dcb8dbf840::t_0b2f01520b10c8 1375-1378
+config/config_accounts.go
+  s_7752dcb8dbf840::t_2d20ba36d4a825 37-40,52
+  s_7752dcb8dbf840::t_c88dc9c9f75262 417-418,420-422
+  s_7752dcb8dbf840::t_0ec02577e23609 4,72,80,84-87,162-163,267-268
+  s_7752dcb8dbf840::t_a7e9651ae282ab 88-96
+  s_7752dcb8dbf840::t_a224a03dbddcb0 74-79,81-83,161,266
+  s_7752dcb8dbf840::t_257721dd5f0589 48-50,53-71,479
+  s_7752dcb8dbf840::t_cf09b3167efe0b 47,51
+  s_7752dcb8dbf840::t_d339b8d3e76f7a 12-23,33,172-176,185
+  s_d75c975fef97a5::t_ec8b65b5bb520d 73
+config/apikey_account_test.go
+  s_7752dcb8dbf840::t_c88dc9c9f75262 56,59-60,62-63,261-263,273-274,277-278
+  s_7752dcb8dbf840::t_cf09b3167efe0b 68,97
+  s_7752dcb8dbf840::t_0ec02577e23609 143-154,223-235
+  s_7752dcb8dbf840::t_a224a03dbddcb0 155-166
+  s_7752dcb8dbf840::t_257721dd5f0589 69-96,102-109
+  s_7752dcb8dbf840::t_d339b8d3e76f7a 167,186-190,192-196
+  s_7752dcb8dbf840::t_a7e9651ae282ab 110,236-237,309-334
+  s_d75c975fef97a5::t_dc9122f3ced06c 238
+pool/account_test.go
+  s_7752dcb8dbf840::t_cb09182d07322b 438-440,463-476
+  s_7752dcb8dbf840::t_0b2f01520b10c8 443,477-496
+  s_7752dcb8dbf840::t_257721dd5f0589 793-803,861-870
+  s_7752dcb8dbf840::t_8815ddad603902 454-462
+  s_7752dcb8dbf840::t_75809749807fdf 434-436,445-452,871-872
+  s_7752dcb8dbf840::t_3c6901590df219 437
+  s_7752dcb8dbf840::t_1828e2c9ce3999 441-442
+  s_7752dcb8dbf840::t_92c4d740d63344 444
+  s_7752dcb8dbf840::t_5db74bff17a765 453
+  s_7752dcb8dbf840::t_199a6f015fc585 873
+config/apikeys.go
+  s_7752dcb8dbf840::t_a7e9651ae282ab 213,218-219
+proxy/admin_accounts.go
+  s_7752dcb8dbf840::t_6e9516dfb6fe42 733
+  s_7752dcb8dbf840::t_8815ddad603902 169,171-172
+  s_7752dcb8dbf840::t_0a89e045ef2331 290-294
+  s_7752dcb8dbf840::t_a88846c50bc7d7 421-423,426-427,440-447,450,461-470
+  s_7752dcb8dbf840::t_a224a03dbddcb0 17,19-21,92,107,109,112-118,123-132,168,170,713-715,737,740-746,755-764
+  s_7752dcb8dbf840::t_257721dd5f0589 18,730-731
+  s_7752dcb8dbf840::t_a7e9651ae282ab 718,734
+  s_7752dcb8dbf840::t_0b2f01520b10c8 719,729
+  s_7752dcb8dbf840::t_e299591809c64e 373-394,488-490,602,625
+  s_7752dcb8dbf840::t_cf09b3167efe0b 91,100
+proxy/kiro_api.go
+  s_7752dcb8dbf840::t_2d20ba36d4a825 272-273
+  s_7752dcb8dbf840::t_257721dd5f0589 577,586
+  s_7752dcb8dbf840::t_0b2f01520b10c8 274,578-585
+proxy/admin_settings.go
+  s_7752dcb8dbf840::t_0b2f01520b10c8 584,587,600
+  s_7752dcb8dbf840::t_a7e9651ae282ab 586
+config/config.go
+  s_7752dcb8dbf840::t_2d20ba36d4a825 208-210
+  s_7752dcb8dbf840::t_a7e9651ae282ab 212-216
+proxy/handler.go
+  s_7752dcb8dbf840::t_956f9e5a7c30d7 200-202
+proxy/kiro_overage.go
+  s_7752dcb8dbf840::t_0a89e045ef2331 55-57,120-122
+config/apikeys_test.go
+  s_7752dcb8dbf840::t_a7e9651ae282ab 276-279,281
+proxy/apikey_account_test.go
+  s_7752dcb8dbf840::t_cf09b3167efe0b 255-292
+  s_7752dcb8dbf840::t_a7e9651ae282ab 428-432,501-502
+  s_7752dcb8dbf840::t_cb09182d07322b 240-254,338-356
+  s_7752dcb8dbf840::t_a224a03dbddcb0 222-239,385-389,392-410,445-457
+  s_7752dcb8dbf840::t_6e9516dfb6fe42 443-444
+  s_7752dcb8dbf840::t_0a89e045ef2331 136-137,357-358,511,535-555,591-598
+  s_7752dcb8dbf840::t_a88846c50bc7d7 556-590
+  s_7752dcb8dbf840::t_650467051eb4ab 9
+  s_7752dcb8dbf840::t_257721dd5f0589 157-158,160-162,390-391,437-441
+  s_7752dcb8dbf840::t_8815ddad603902 204-221
+  s_7752dcb8dbf840::t_0b2f01520b10c8 139-153,155-156,163-164,321-337,434-435,442,467,489-490,507-510
+  s_7752dcb8dbf840::t_c88dc9c9f75262 120-122,131-135
+  s_7752dcb8dbf840::t_75809749807fdf 80-101
+  s_d75c975fef97a5::t_24b61afe90e096 138,359
+web/app.js
+  s_b796aef1e7df4b::t_e0bde56cf111a0 1283,1586,1590,1594,1623-1625,1665-1667,1697,1803-1804,1810,1946-1948,2235-2239,2243,2258,2290,2361,3321,3346,3376,3382-3397,3662,3693-3701,3704-3723,3768-3792
+web/locales/en.json
+  s_9ed4add135c84e::t_670614821997c4 274-275,351,363-365
+web/locales/zh.json
+  s_9ed4add135c84e::t_40293e87dc0770 274-275,351,363-365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7d32e08ecafc5e2562ac60ef9d54774eed4eca38",
+  "prompts": {},
+  "sessions": {
+    "s_7752dcb8dbf840": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "c3ed0a6f-969e-4ef2-b358-c24c2e6a2a55",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_9ed4add135c84e": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "8429e66e-4ddc-4890-82b7-00e074d61868",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_d75c975fef97a5": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "9307a762-bc34-460c-958b-c34d3847b6ae",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
