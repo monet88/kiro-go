@@ -286,7 +286,7 @@ type AccountInfo struct {
 
 // Version current version. Declared as var (not const) so release builds can
 // override it via -ldflags "-X kiro-go/config.Version=<tag>".
-var Version = "1.1.2"
+var Version = "1.1.3"
 
 // PromptFilterConfig holds all prompt filter settings for API responses.
 type PromptFilterConfig struct {
