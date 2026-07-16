@@ -124,79 +124,43 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 
 	chatID := "chatcmpl-" + uuid.New().String()
-	excluded := make(map[string]bool)
-	var lastErr error
-	var lastAccount *config.Account
-	// activeRelease is a panic safety net: release is sync.Once-idempotent, so
-	// the manual release() calls below still drive normal failover, while this
-	// deferred call guarantees the routing slot is freed even if a panic unwinds
-	// the stack (net/http would otherwise recover without releasing the slot,
-	// leaking the concurrency counter and eventually deadlocking routing).
-	var activeRelease func()
-	defer func() {
-		if activeRelease != nil {
-			activeRelease()
-		}
-	}()
 
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		account, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, payload.RoutingAffinityKey)
-		if acquireErr != nil {
-			if isRoutingLimitError(acquireErr) {
-				h.recordFailure()
-				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
-				recordRequestMetrics("openai", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	// Per-attempt render state, hoisted to caller scope so terminal rendering
+	// (final chunk / error close) runs after Account Routing releases the slot,
+	// while token streaming still happens inside the callback under the slot.
+	var toolCalls []ToolCall
+	var toolCallIndex int
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var rawContentBuilder strings.Builder
+	var rawReasoningBuilder strings.Builder
+	var firstTokenAt time.Time
+	var textBuffer string
+	var inThinkingBlock bool
+	var dropTagThinking bool
+	var thinkingSource thinkingStreamSource
+	var thinkingStarted bool
+	var eventThinkingOpen bool
+	responseStarted := false
 
-				// Stop keepalive first; if a ping already committed SSE, finish as SSE.
-				sse.Stop()
-				if sse.Committed() {
-					errChunk := map[string]interface{}{
-						"id":      chatID,
-						"object":  "chat.completion.chunk",
-						"created": time.Now().Unix(),
-						"model":   model,
-						"choices": []map[string]interface{}{{
-							"index":         0,
-							"delta":         map[string]interface{}{},
-							"finish_reason": "error",
-						}},
-						"error": map[string]string{"message": routingErrorMessage(acquireErr)},
-					}
-					if data, mErr := json.Marshal(errChunk); mErr == nil {
-						sse.WriteData(string(data))
-					}
-					sse.WriteData("[DONE]")
-					return
-				}
-				h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(acquireErr))
-				return
-			}
-			break
-		}
-		activeRelease = release
-		if err := h.ensureValidToken(account); err != nil {
-			release()
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			continue
-		}
-
-		var toolCalls []ToolCall
-		var toolCallIndex int
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
-		var rawContentBuilder strings.Builder
-		var rawReasoningBuilder strings.Builder
-		var firstTokenAt time.Time
-		var textBuffer string
-		var inThinkingBlock bool
-		var dropTagThinking bool
-		var thinkingSource thinkingStreamSource
-		var thinkingStarted bool
-		var eventThinkingOpen bool
-		responseStarted := false
+	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
+		// Reset per-attempt state so a failover starts clean.
+		toolCalls = nil
+		toolCallIndex = 0
+		inputTokens, outputTokens = 0, 0
+		credits = 0
+		realInputTokens = 0
+		rawContentBuilder.Reset()
+		rawReasoningBuilder.Reset()
+		firstTokenAt = time.Time{}
+		textBuffer = ""
+		inThinkingBlock = false
+		dropTagThinking = false
+		thinkingSource = thinkingSourceUnknown
+		thinkingStarted = false
+		eventThinkingOpen = false
+		responseStarted = false
 
 		sendChunk := func(content string, thinkingState int) {
 			if content == "" && thinkingState == 2 {
@@ -466,23 +430,17 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		}
 
 		err := CallKiroAPI(ctx, account, payload, callback)
-		release()
 		if err != nil {
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
+			// Before any semantic model output: fail over to another Account.
 			if !responseStarted {
-				if shouldBackoffBeforeRetry(err) {
-					time.Sleep(retryBackoffAfterRateLimit())
-				}
-				continue
+				return attemptRetry(err)
 			}
+			// Output already committed: we cannot change the HTTP status or fail
+			// over. Record the failure and close the SSE stream cleanly inline
+			// (the caller holds the SSE/chatID context), then stop.
 			h.recordFailure()
 			statusCode, errType := metricsErrorDetails(err, http.StatusInternalServerError, "api_error")
 			recordRequestMetrics("openai", model, true, account, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
-			// Output already started: we cannot change the HTTP status now, but
-			// we must still close the SSE stream cleanly. Emit a terminating
-			// chunk with finish_reason + [DONE] so clients don't hang waiting.
 			closeChunk := map[string]interface{}{
 				"id":      chatID,
 				"object":  "chat.completion.chunk",
@@ -498,7 +456,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				sse.WriteData(string(data))
 			}
 			sse.WriteData("[DONE]")
-			return
+			return attemptStop(err, true)
 		}
 
 		processText("", false, true)
@@ -558,6 +516,15 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		data, _ := json.Marshal(chunk)
 		sse.WriteData(string(data))
 		sse.WriteData("[DONE]")
+		return attemptSuccess()
+	})
+
+	// Success and the committed-terminal case already rendered inside the
+	// callback. The remaining branches are the not-yet-committed failures.
+	if outcome.stopReason == routeStopSuccess || outcome.stopReason == routeStopCallerTerminal {
+		return
+	}
+	if outcome.stopReason == routeStopCanceled {
 		return
 	}
 
@@ -585,7 +552,19 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		sse.WriteData("[DONE]")
 	}
 
-	if lastErr == nil {
+	if outcome.stopReason == routeStopRoutingLimit {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.acquireErr, http.StatusTooManyRequests, "rate_limit_error")
+		recordRequestMetrics("openai", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+		if streamCommitted {
+			writeOpenAIStreamError(routingErrorMessage(outcome.acquireErr))
+			return
+		}
+		h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(outcome.acquireErr))
+		return
+	}
+
+	if outcome.lastErr == nil {
 		recordRequestMetrics("openai", model, true, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
 		if streamCommitted {
 			writeOpenAIStreamError("No available accounts")
@@ -596,59 +575,38 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	}
 
 	h.recordFailure()
-	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
-	recordRequestMetrics("openai", model, true, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-	logRetryExhausted("openai", model, statusCode, errType, lastErr)
+	statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "server_error")
+	recordRequestMetrics("openai", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	logRetryExhausted("openai", model, statusCode, errType, outcome.lastErr)
 	if streamCommitted {
-		writeOpenAIStreamError(improperlyFormedClientMessage(lastErr))
+		writeOpenAIStreamError(improperlyFormedClientMessage(outcome.lastErr))
 		return
 	}
-	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(lastErr))
+	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(outcome.lastErr))
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
 func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
 	requestStartedAt := time.Now()
-	excluded := make(map[string]bool)
-	var lastErr error
-	var lastAccount *config.Account
-	// Panic safety net (see handleOpenAIStream): guarantees the routing slot is
-	// released even if a panic unwinds the stack. release is sync.Once-idempotent.
-	var activeRelease func()
-	defer func() {
-		if activeRelease != nil {
-			activeRelease()
-		}
-	}()
 
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		account, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, payload.RoutingAffinityKey)
-		if acquireErr != nil {
-			if isRoutingLimitError(acquireErr) {
-				h.recordFailure()
-				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
-				recordRequestMetrics("openai", model, false, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	// Per-attempt render state, hoisted to caller scope so the JSON response is
+	// written after Account Routing releases the slot. Non-stream never commits
+	// output mid-attempt, so every failure is a clean failover (attemptRetry).
+	var content string
+	var reasoningContent string
+	var toolUses []KiroToolUse
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var okAccount *config.Account
 
-				h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(acquireErr))
-				return
-			}
-			break
-		}
-		activeRelease = release
-		if err := h.ensureValidToken(account); err != nil {
-			release()
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			continue
-		}
-
-		var content string
-		var reasoningContent string
-		var toolUses []KiroToolUse
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
+	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
+		content = ""
+		reasoningContent = ""
+		toolUses = nil
+		inputTokens, outputTokens = 0, 0
+		credits = 0
+		realInputTokens = 0
 
 		callback := &KiroStreamCallback{
 			OnText: func(text string, isThinking bool) {
@@ -666,18 +624,19 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 			},
 		}
 
-		err := CallKiroAPI(ctx, account, payload, callback)
-		release()
-		if err != nil {
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			if shouldBackoffBeforeRetry(err) {
-				time.Sleep(retryBackoffAfterRateLimit())
-			}
-			continue
+		if err := CallKiroAPI(ctx, account, payload, callback); err != nil {
+			return attemptRetry(err)
 		}
+		okAccount = account
+		return attemptSuccess()
+	})
 
+	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+
+	if outcome.stopReason == routeStopSuccess {
+		account := okAccount
 		finalContent, extractedReasoning := extractThinkingFromContent(content)
 		if thinking && reasoningContent == "" && extractedReasoning != "" {
 			reasoningContent = extractedReasoning
@@ -704,17 +663,25 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if lastErr == nil {
+	if outcome.stopReason == routeStopRoutingLimit {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.acquireErr, http.StatusTooManyRequests, "rate_limit_error")
+		recordRequestMetrics("openai", model, false, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+		h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(outcome.acquireErr))
+		return
+	}
+
+	if outcome.lastErr == nil {
 		recordRequestMetrics("openai", model, false, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
 
 	h.recordFailure()
-	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
-	recordRequestMetrics("openai", model, false, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-	logRetryExhausted("openai", model, statusCode, errType, lastErr)
-	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(lastErr))
+	statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "server_error")
+	recordRequestMetrics("openai", model, false, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	logRetryExhausted("openai", model, statusCode, errType, outcome.lastErr)
+	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(outcome.lastErr))
 }
 
 func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, message string) {
