@@ -252,20 +252,21 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 
 	msgID := "msg_" + uuid.New().String()
 	startInputTokens := estimatedInputTokens
-	excluded := make(map[string]bool)
-	var lastErr error
-	var lastAccount *config.Account
 	messageStarted := false
 	var messageStartUsage promptCacheUsage
-	// Panic safety net: guarantees the routing slot is released even if a panic
-	// unwinds the stack. release is sync.Once-idempotent, so the manual release()
-	// calls below still drive normal failover.
-	var activeRelease func()
-	defer func() {
-		if activeRelease != nil {
-			activeRelease()
-		}
-	}()
+
+	// Per-attempt render state used after Account Routing returns, hoisted to
+	// caller scope so terminal rendering (message_delta/message_stop) runs after
+	// the slot is released. Block-tracking state stays inside the callback.
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var toolUses []KiroToolUse
+	var rawContentBuilder strings.Builder
+	var rawThinkingBuilder strings.Builder
+	var firstTokenAt time.Time
+	var cacheUsage promptCacheUsage
+	var okAccount *config.Account
 
 	ensureMessageStart := func() {
 		if messageStarted {
@@ -287,41 +288,20 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		messageStarted = true
 	}
 
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		account, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, payload.RoutingAffinityKey)
-		if acquireErr != nil {
-			if isRoutingLimitError(acquireErr) {
-				h.recordFailure()
-				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
-				recordRequestMetrics("claude", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
+		// Reset per-attempt state so a failover starts clean.
+		inputTokens, outputTokens = 0, 0
+		credits = 0
+		realInputTokens = 0
+		toolUses = nil
+		rawContentBuilder.Reset()
+		rawThinkingBuilder.Reset()
+		firstTokenAt = time.Time{}
 
-				sse.WriteEvent("error", map[string]interface{}{
-					"type":  "error",
-					"error": map[string]string{"type": "rate_limit_error", "message": routingErrorMessage(acquireErr)},
-				})
-				return
-			}
-			break
-		}
-		activeRelease = release
-		if err := h.ensureValidToken(account); err != nil {
-			release()
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			continue
-		}
-		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
+		cacheUsage = h.promptCache.Compute(account.ID, cacheProfile)
 		messageStartUsage = cacheUsage
 
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
-		var toolUses []KiroToolUse
 		var nextContentIndex int
-		var rawContentBuilder strings.Builder
-		var rawThinkingBuilder strings.Builder
-		var firstTokenAt time.Time
 		activeBlockIndex := -1
 		activeBlockType := ""
 
@@ -634,33 +614,34 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 		}
 
 		err := CallKiroAPI(ctx, account, payload, callback)
-		release()
 		if err != nil {
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
+			// Before any semantic model output (message not yet started): fail
+			// over to another Account.
 			if !messageStarted {
-				if shouldBackoffBeforeRetry(err) {
-					time.Sleep(retryBackoffAfterRateLimit())
-				}
-				continue
+				return attemptRetry(err)
 			}
-			h.recordFailure()
-			statusCode, errType := metricsErrorDetails(err, http.StatusInternalServerError, "api_error")
-			recordRequestMetrics("claude", model, true, account, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
-			sse.WriteEvent("error", map[string]interface{}{
-				"type":  "error",
-				"error": map[string]string{"type": "api_error", "message": err.Error()},
-			})
-			return
+			// Output already committed: cannot change status or fail over. Stop;
+			// the caller closes the SSE stream after the slot is released.
+			return attemptStop(err, true)
 		}
 
+		// Flush remaining buffered model output while the slot is still held.
 		processClaudeText("", false, true)
 		if eventThinkingOpen {
 			sendText("", 3)
 		}
 		closeActiveBlock()
+		okAccount = account
+		return attemptSuccess()
+	})
 
+	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+
+	// Success: slot released; emit final usage + message_stop and record success.
+	if outcome.stopReason == routeStopSuccess {
+		account := okAccount
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
@@ -699,9 +680,21 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			},
 			"usage": buildClaudeUsageMap(inputTokens, outputTokens, cacheUsage, cacheProfile != nil),
 		})
-
 		sse.WriteEvent("message_stop", map[string]interface{}{
 			"type": "message_stop",
+		})
+		return
+	}
+
+	// Output already committed then upstream failed: close the SSE stream cleanly
+	// now that the slot is released.
+	if outcome.stopReason == routeStopCallerTerminal {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "api_error")
+		recordRequestMetrics("claude", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
+		sse.WriteEvent("error", map[string]interface{}{
+			"type":  "error",
+			"error": map[string]string{"type": "api_error", "message": outcome.lastErr.Error()},
 		})
 		return
 	}
@@ -711,7 +704,23 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	sse.Stop()
 	streamCommitted := messageStarted || sse.Committed()
 
-	if lastErr == nil {
+	if outcome.stopReason == routeStopRoutingLimit {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.acquireErr, http.StatusTooManyRequests, "rate_limit_error")
+		recordRequestMetrics("claude", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+		if streamCommitted {
+			ensureMessageStart()
+			sse.WriteEvent("error", map[string]interface{}{
+				"type":  "error",
+				"error": map[string]string{"type": "rate_limit_error", "message": routingErrorMessage(outcome.acquireErr)},
+			})
+			return
+		}
+		h.sendClaudeError(w, 429, "rate_limit_error", routingErrorMessage(outcome.acquireErr))
+		return
+	}
+
+	if outcome.lastErr == nil {
 		recordRequestMetrics("claude", model, true, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
 		if streamCommitted {
 			ensureMessageStart()
@@ -726,14 +735,14 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	}
 
 	h.recordFailure()
-	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "api_error")
-	recordRequestMetrics("claude", model, true, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-	logRetryExhausted("claude_stream", model, statusCode, errType, lastErr)
+	statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "api_error")
+	recordRequestMetrics("claude", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	logRetryExhausted("claude_stream", model, statusCode, errType, outcome.lastErr)
 	// If the stream already started (real events or keepalive), the SSE
 	// headers/body are committed and the status line cannot change; emit an
 	// error event and stop. Otherwise return the true status (e.g. 429 when the
 	// pool is drained) instead of a blanket 500.
-	clientMsg := improperlyFormedClientMessage(lastErr)
+	clientMsg := improperlyFormedClientMessage(outcome.lastErr)
 	if streamCommitted {
 		ensureMessageStart()
 		sse.WriteEvent("error", map[string]interface{}{
@@ -748,47 +757,28 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 // handleClaudeNonStream Claude 非流式响应
 func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWriter, payload *KiroPayload, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
 	requestStartedAt := time.Now()
-	excluded := make(map[string]bool)
-	var lastErr error
-	var lastAccount *config.Account
-	// Panic safety net: guarantees the routing slot is released even if a panic
-	// unwinds the stack. release is sync.Once-idempotent.
-	var activeRelease func()
-	defer func() {
-		if activeRelease != nil {
-			activeRelease()
-		}
-	}()
 
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		account, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, payload.RoutingAffinityKey)
-		if acquireErr != nil {
-			if isRoutingLimitError(acquireErr) {
-				h.recordFailure()
-				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
-				recordRequestMetrics("claude", model, false, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	// Per-attempt render state, hoisted to caller scope so the JSON response is
+	// written after Account Routing releases the slot. Non-stream never commits
+	// output mid-attempt, so every failure is a clean failover (attemptRetry).
+	var content string
+	var thinkingContent string
+	var toolUses []KiroToolUse
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var cacheUsage promptCacheUsage
+	var okAccount *config.Account
 
-				h.sendClaudeError(w, 429, "rate_limit_error", routingErrorMessage(acquireErr))
-				return
-			}
-			break
-		}
-		activeRelease = release
-		if err := h.ensureValidToken(account); err != nil {
-			release()
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			continue
-		}
-		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
+	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
+		content = ""
+		thinkingContent = ""
+		toolUses = nil
+		inputTokens, outputTokens = 0, 0
+		credits = 0
+		realInputTokens = 0
 
-		var content string
-		var thinkingContent string
-		var toolUses []KiroToolUse
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
+		cacheUsage = h.promptCache.Compute(account.ID, cacheProfile)
 
 		callback := &KiroStreamCallback{
 			OnText: func(text string, isThinking bool) {
@@ -813,18 +803,19 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 			},
 		}
 
-		err := CallKiroAPI(ctx, account, payload, callback)
-		release()
-		if err != nil {
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			if shouldBackoffBeforeRetry(err) {
-				time.Sleep(retryBackoffAfterRateLimit())
-			}
-			continue
+		if err := CallKiroAPI(ctx, account, payload, callback); err != nil {
+			return attemptRetry(err)
 		}
+		okAccount = account
+		return attemptSuccess()
+	})
 
+	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+
+	if outcome.stopReason == routeStopSuccess {
+		account := okAccount
 		thinkingFormat := thinkingOpts.Format
 		finalContent, extractedReasoning := extractThinkingFromContent(content)
 		rawThinkingContent := thinkingContent
@@ -881,17 +872,25 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if lastErr == nil {
+	if outcome.stopReason == routeStopRoutingLimit {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.acquireErr, http.StatusTooManyRequests, "rate_limit_error")
+		recordRequestMetrics("claude", model, false, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+		h.sendClaudeError(w, 429, "rate_limit_error", routingErrorMessage(outcome.acquireErr))
+		return
+	}
+
+	if outcome.lastErr == nil {
 		recordRequestMetrics("claude", model, false, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
 		h.sendClaudeError(w, 503, "api_error", "No available accounts")
 		return
 	}
 
 	h.recordFailure()
-	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "api_error")
-	recordRequestMetrics("claude", model, false, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-	logRetryExhausted("claude", model, statusCode, errType, lastErr)
-	h.sendClaudeError(w, statusCode, clientFacingClaudeErrorType(statusCode), improperlyFormedClientMessage(lastErr))
+	statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "api_error")
+	recordRequestMetrics("claude", model, false, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	logRetryExhausted("claude", model, statusCode, errType, outcome.lastErr)
+	h.sendClaudeError(w, statusCode, clientFacingClaudeErrorType(statusCode), improperlyFormedClientMessage(outcome.lastErr))
 }
 
 func (h *Handler) sendClaudeError(w http.ResponseWriter, status int, errType, message string) {
