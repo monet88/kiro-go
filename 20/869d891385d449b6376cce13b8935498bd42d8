@@ -1,0 +1,27 @@
+proxy/account_routing_test.go
+  s_8b70cf5dd48ed1::t_ab24f3bad0acc5 48-50,53-55
+  s_8b70cf5dd48ed1::t_4e2c03fec6680b 1-7,9-47,51-52,56-337
+  s_8b70cf5dd48ed1::t_d0942ba2ac9517 8
+proxy/handler_routing.go
+  s_8b70cf5dd48ed1::t_1682ba8cf46c24 58-64
+  s_8b70cf5dd48ed1::t_30dc10ed5f8feb 72-314
+proxy/handler.go
+  s_8b70cf5dd48ed1::t_4a0408605ba10f 4
+  s_8b70cf5dd48ed1::t_26cf387b3ee9b5 52-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "20869d891385d449b6376cce13b8935498bd42d8",
+  "prompts": {},
+  "sessions": {
+    "s_8b70cf5dd48ed1": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "79bff188-3669-421b-b75c-6b0d932b1c4b",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
