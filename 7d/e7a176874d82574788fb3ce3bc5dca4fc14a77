@@ -1,0 +1,36 @@
+proxy/thinking_splitter.go
+  s_8b70cf5dd48ed1::t_cc9d269f4ea19e 214-227,229-238,240
+  s_8b70cf5dd48ed1::t_7b31bad0ae9557 71-76,78,105-111
+  s_8b70cf5dd48ed1::t_cc0ae2dc5fa65d 1-70,77,79-104,112-213,228,239,241-308
+proxy/thinking_splitter_test.go
+  s_8b70cf5dd48ed1::t_69d63e1a76f52a 1-144,147-148,150-154,163-236
+  s_8b70cf5dd48ed1::t_8142258f7b0480 145-146,149,155-162
+proxy/handler_claude.go
+  s_b796aef1e7df4b::t_f30868db38b590 441-471,497-499
+proxy/handler_openai.go
+  s_b796aef1e7df4b::t_17c0c5fcf66e05 259-289,315-317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7de7a176874d82574788fb3ce3bc5dca4fc14a77",
+  "prompts": {},
+  "sessions": {
+    "s_8b70cf5dd48ed1": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "79bff188-3669-421b-b75c-6b0d932b1c4b",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
