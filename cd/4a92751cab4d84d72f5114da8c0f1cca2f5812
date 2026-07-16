@@ -1,0 +1,19 @@
+proxy/handler_openai.go
+  s_b796aef1e7df4b::t_7b3c21861c9be0 128-163,434,436,438-440,459,519-527,555-567,578-580,582,585,592-609,627-628,630-632,634-639,666-674,681-684
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "cd4a92751cab4d84d72f5114da8c0f1cca2f5812",
+  "prompts": {},
+  "sessions": {
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
