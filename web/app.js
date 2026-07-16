@@ -3379,25 +3379,30 @@
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
   }
+  // Kiro API Key (ksk_) add dialog — batch paste + region auto-detect, matching
+  // the dedicated ApiKey fork UX. Use kiroApiKey* ids only (never reuse Settings
+  // gateway ids like addApiKeyBtn — getElementById would bind the wrong button).
   function modalApiKey(title, body) {
     title.textContent = t('modal.apiKeyTitle');
-    // Use kiroApiKey* ids — never reuse settings gateway ids like addApiKeyBtn
-    // (document.getElementById returns the first match, so a collision would
-    // bind this handler to Settings → "Add API Key" and leave the modal button dead).
+    var regions = ['', 'us-east-1', 'eu-central-1', 'ap-northeast-1', 'eu-west-1', 'ap-southeast-1', 'us-west-2'];
+    var opts = regions.map(function (r) {
+      return '<option value="' + r + '">' + escapeHtml(r === '' ? t('apiKey.autoRegion') : r) + '</option>';
+    }).join('');
     body.innerHTML =
       '<p class="help-block">' + escapeHtml(t('modal.apiKeyDesc')) + '</p>' +
       '<div class="form-group"><label>' + escapeHtml(t('apiKey.value')) + '</label>' +
-      '<input type="password" id="kiroApiKeyValue" class="font-mono" autocomplete="off" /></div>' +
-      '<div class="form-group"><label>' + escapeHtml(t('detail.email')) + '</label>' +
-      '<input type="text" id="kiroApiKeyEmail" autocomplete="email" /></div>' +
-      '<div class="form-group"><label>' + escapeHtml(t('detail.region')) + '</label>' +
-      '<input type="text" id="kiroApiKeyRegion" value="us-east-1" /></div>' +
+      '<textarea id="kiroApiKeyInput" class="font-mono" placeholder="ksk_..." autocomplete="off" rows="4"></textarea>' +
+      '</div>' +
+      '<div class="form-group"><label>' + escapeHtml(t('apiKey.region')) + '</label>' +
+      '<select id="kiroApiKeyRegion">' + opts + '</select></div>' +
       '<div class="modal-footer">' +
       '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
-      '<button class="btn btn-primary" id="addKiroApiKeyAccountBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
+      '<button class="btn btn-primary" id="kiroApiKeyAddBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
       '</div>';
-    const addBtn = body.querySelector('#addKiroApiKeyAccountBtn');
-    if (addBtn) addBtn.addEventListener('click', addApiKeyAccount);
+    // Click is also handled by the delegated #modalBody listener so the binding
+    // survives custom-select enhancement that may replace nodes.
+    var addBtn = body.querySelector('#kiroApiKeyAddBtn');
+    if (addBtn) addBtn.addEventListener('click', importApiKey);
   }
   function modalBuilderId(title, body) {
     title.textContent = t('modal.builderIdTitle');
@@ -3769,33 +3774,61 @@
     toastPrimary(msg, { duration: 5200 });
     newIds.forEach(autoRefreshNewAccount);
   }
-  async function addApiKeyAccount() {
-    const valueEl = $('kiroApiKeyValue');
-    const emailEl = $('kiroApiKeyEmail');
-    const regionEl = $('kiroApiKeyRegion');
-    if (!valueEl) return toastWarning(t('apiKey.missing'));
-    const kiroApiKey = valueEl.value.trim();
-    if (!kiroApiKey) return toastWarning(t('apiKey.missing'));
-    const payload = {
-      kiroApiKey,
-      authMethod: 'api_key',
-      email: emailEl ? emailEl.value.trim() : '',
-      region: (regionEl && regionEl.value.trim()) || 'us-east-1',
-      enabled: true
-    };
-    try {
-      const res = await api('/accounts', { method: 'POST', body: JSON.stringify(payload) });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok || !d.success) {
-        toastError(t('common.failed') + ': ' + (d.error || ('HTTP ' + res.status)));
-        return;
+  async function importApiKey() {
+    var inputEl = $('kiroApiKeyInput');
+    if (!inputEl) return toastWarning(t('apiKey.missing'));
+    var raw = (inputEl.value || '').trim();
+    if (!raw) return toastWarning(t('apiKey.missing'));
+    var regionEl = $('kiroApiKeyRegion');
+    var region = regionEl ? (regionEl.value || '').trim() : '';
+    var keys = raw.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!keys.length) return toastWarning(t('apiKey.missing'));
+    var btn = $('kiroApiKeyAddBtn');
+    if (btn) { btn.disabled = true; btn.textContent = t('apiKey.checking'); }
+    var ok = 0, fail = 0, firstId = null, lastErr = '', newIds = [];
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        // Import path validates against management.{region}.kiro.dev and auto-
+        // detects the serving region when region is empty / wrong.
+        var res = await api('/auth/credentials', {
+          method: 'POST',
+          body: JSON.stringify({
+            kiroApiKey: keys[i],
+            accessToken: keys[i],
+            authMethod: 'api_key',
+            region: region,
+            refreshToken: '',
+            clientId: '',
+            clientSecret: ''
+          })
+        });
+        var d = await res.json().catch(function () { return {}; });
+        if (res.ok && d.success) {
+          ok++;
+          if (d.account && d.account.id) {
+            if (!firstId) firstId = d.account.id;
+            newIds.push(d.account.id);
+          }
+        } else {
+          fail++;
+          lastErr = (d && d.error) || ('HTTP ' + res.status);
+        }
+      } catch (e) {
+        fail++;
+        lastErr = String(e && e.message ? e.message : e);
       }
+    }
+    if (btn) { btn.disabled = false; btn.textContent = t('common.add'); }
+    if (ok > 0) {
       closeModal();
       loadAccounts();
       loadStats();
-      toastPrimary(t('apiKey.added'));
-    } catch (e) {
-      toastError(t('common.failed') + ': ' + (e.message || ''));
+      var msg = t('apiKey.addedBatch', ok);
+      if (fail > 0) msg += t('apiKey.addedPartial', fail);
+      toastPrimary(msg, { duration: 5200 });
+      newIds.forEach(function (id) { autoRefreshNewAccount(id); });
+    } else {
+      toastError(t('common.failed') + ': ' + lastErr);
     }
   }
   function parseLineCredentials(text) {
@@ -4614,6 +4647,7 @@
     ].forEach(([id, fn]) => bindDialogBackdropClose(id, fn));
 
     $('modalBody').addEventListener('click', e => {
+      if (e.target.closest('#kiroApiKeyAddBtn')) { importApiKey(); return; }
       const m = e.target.closest('[data-method]');
       if (m) { showModal(m.dataset.method); return; }
       const g = e.target.closest('[data-modal-goto]');
