@@ -1,0 +1,38 @@
+proxy/apikey_live_smoke_test.go
+  s_11e37aaadafb0b::t_dca1a4523582e5 5,7,27,37-51,72,82
+  s_11e37aaadafb0b::t_9c0ce6ec050389 1-4,6,8-26,28-36,52-71,73-81,83
+proxy/kiro_headers.go
+  s_11e37aaadafb0b::t_2549ca4ba63348 59-67
+config/config_accounts.go
+  s_11e37aaadafb0b::t_b063c2858ccd63 62-63
+config/apikey_account_test.go
+  s_11e37aaadafb0b::t_e132622566c654 108-111
+proxy/admin_accounts.go
+  s_11e37aaadafb0b::t_26a2bf33906a03 178-189
+proxy/kiro_api.go
+  s_11e37aaadafb0b::t_0c4594dcc361f5 49-57,66-90,251-253,301,306,311,316,319,322,324,646,806,811,813,817,822,830,836,841,847,850,853,858,861,866-867,874-875,881-882,884,890,892,897,901-902,913,917,919,922,924,932,934,938,948,950,961,963,971-972,974,981,984,987,990,998
+  s_11e37aaadafb0b::t_6571459ffef722 294-300,302-305,307-310,312-315,317-318,320-321,323,325,647,649,797-805,807-810,812,814-816,818-821,823-829,831-835,837-840,842-846,848-849,851-852,854-857,859-860,862-865,868-873,876-880,883,885-889,891,893-896,898-900,903-912,914-916,918,920-921,923,925-931,933,935-937,939-947,949,951-960,962,964-970,973,975-980,982-983,985-986,988-989,991-997,999
+proxy/admin_auth.go
+  s_11e37aaadafb0b::t_2ba201d74bd7f3 7
+  s_11e37aaadafb0b::t_4943a19bf8eacb 466-471,481-483
+proxy/apikey_account_test.go
+  s_11e37aaadafb0b::t_11dcbac97f2400 139,141-143,145-154,156-159,161-162,164-181,183-184,472-474,479,484-494
+proxy/kiro.go
+  s_11e37aaadafb0b::t_96b48e859e38f1 385-391,553-558,565-613
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "6acf0b407691dc4578fff9802b1044daf67a1754",
+  "prompts": {},
+  "sessions": {
+    "s_11e37aaadafb0b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d8522cdc-2054-43a9-b035-46a27d0fbeb4",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
