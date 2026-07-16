@@ -1,0 +1,19 @@
+proxy/handler_claude.go
+  s_b796aef1e7df4b::t_2e18496d3d5b04 257-269,291-301,618-619,621,623-625,628,634-640,642-644,689-701,707-723,738-740,745,761-781,806-807,809-811,813-818,875-883,890-893
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2b1059fe199c0ebd44a9b8e7e118c2046d8ca561",
+  "prompts": {},
+  "sessions": {
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
