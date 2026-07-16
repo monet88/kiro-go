@@ -1,0 +1,23 @@
+web/app.js
+  s_11e37aaadafb0b::t_e075ce2f665ad4 3382-3384,3387-3390,3394-3397,3400,3402-3405,3777-3818,3820-3822,3826-3831,4650
+web/locales/en.json
+  s_11e37aaadafb0b::t_e1c57c3b377630 275,363-367,369-370
+web/locales/zh.json
+  s_11e37aaadafb0b::t_e883945de08b26 275,363-367,369-370
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "e73744fbd35eb2f2caef178ad8c665445e1dd480",
+  "prompts": {},
+  "sessions": {
+    "s_11e37aaadafb0b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d8522cdc-2054-43a9-b035-46a27d0fbeb4",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
