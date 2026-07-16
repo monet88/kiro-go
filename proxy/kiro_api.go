@@ -872,6 +872,21 @@ func fetchUsageLimitsViaKiroDev(account *config.Account) (*config.AccountInfo, e
 		if info.UsageLimit > 0 {
 			info.UsagePercent = info.UsageCurrent / info.UsageLimit
 		}
+		if b.FreeTrialInfo != nil {
+			info.TrialUsageCurrent = b.FreeTrialInfo.CurrentUsage
+			info.TrialUsageLimit = b.FreeTrialInfo.UsageLimit
+			if info.TrialUsageLimit > 0 {
+				info.TrialUsagePercent = info.TrialUsageCurrent / info.TrialUsageLimit
+			}
+			info.TrialStatus = b.FreeTrialInfo.FreeTrialStatus
+			if b.FreeTrialInfo.FreeTrialExpiry != "" {
+				if ts, err := b.FreeTrialInfo.FreeTrialExpiry.Int64(); err == nil && ts > 0 {
+					info.TrialExpiresAt = ts
+				} else if f, err := b.FreeTrialInfo.FreeTrialExpiry.Float64(); err == nil && f > 0 {
+					info.TrialExpiresAt = int64(f)
+				}
+			}
+		}
 	}
 	if usage.NextDateReset != "" {
 		if ts, err := usage.NextDateReset.Int64(); err == nil && ts > 0 {
@@ -883,10 +898,28 @@ func fetchUsageLimitsViaKiroDev(account *config.Account) (*config.AccountInfo, e
 	return info, nil
 }
 
+// probeApiKeyServingRegionFn is the production probe implementation. Tests may
+// swap it for a stub via setProbeApiKeyServingRegionForTest.
+var probeApiKeyServingRegionFn = probeApiKeyServingRegionLive
+
+func setProbeApiKeyServingRegionForTest(fn func(*config.Account) (*config.AccountInfo, string, error)) func() {
+	prev := probeApiKeyServingRegionFn
+	if fn == nil {
+		probeApiKeyServingRegionFn = probeApiKeyServingRegionLive
+	} else {
+		probeApiKeyServingRegionFn = fn
+	}
+	return func() { probeApiKeyServingRegionFn = prev }
+}
+
 // probeApiKeyServingRegion tries the account's region first, then common Kiro
 // management regions, and returns the first region that accepts the ksk_ key.
 // It never mutates config or disables accounts (safe for pre-add validation).
 func probeApiKeyServingRegion(account *config.Account) (*config.AccountInfo, string, error) {
+	return probeApiKeyServingRegionFn(account)
+}
+
+func probeApiKeyServingRegionLive(account *config.Account) (*config.AccountInfo, string, error) {
 	if account == nil {
 		return nil, "", fmt.Errorf("account is nil")
 	}
@@ -995,6 +1028,11 @@ func applyApiKeyProbeResult(account *config.Account, info *config.AccountInfo, r
 	account.UsagePercent = info.UsagePercent
 	account.NextResetDate = info.NextResetDate
 	account.LastRefresh = info.LastRefresh
+	account.TrialUsageCurrent = info.TrialUsageCurrent
+	account.TrialUsageLimit = info.TrialUsageLimit
+	account.TrialUsagePercent = info.TrialUsagePercent
+	account.TrialStatus = info.TrialStatus
+	account.TrialExpiresAt = info.TrialExpiresAt
 }
 
 // 响应结构体

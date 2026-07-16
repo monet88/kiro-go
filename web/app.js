@@ -1620,9 +1620,8 @@
     return '$' + num.toFixed(num >= 1 ? 2 : 4);
   }
   function getEffectiveUsageInfo(a) {
-    if (a && a.isApiKeyAccount) {
-      return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
-    }
+    // API-key Accounts have real management.kiro.dev usage limits; only overage /
+    // OAuth token-expiry signals stay hidden (no overage toggle, no ExpiresAt).
     const limit = Number(a && a.usageLimit || 0);
     if (!(limit > 0)) {
       return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
@@ -1662,9 +1661,6 @@
     };
   }
   function getMainUsageInfo(a) {
-    if (a && a.isApiKeyAccount) {
-      return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
-    }
     const limit = Number(a.usageLimit || 0);
     if (!(limit > 0)) {
       return { visible: false, pct: 0, displayPct: 0, barPct: 0, text: '-', title: '-', className: '' };
@@ -1800,8 +1796,10 @@
       const usageTitle = data.mainUsage.visible ? data.mainUsage.title : '-';
       const overageText = data.overageUsage ? '<span class="account-list-trial account-list-overage">' + escapeHtml(data.overageUsage.text) + '</span>' : '';
       const trialText = data.trialUsage ? '<span class="account-list-trial">' + escapeHtml(t('accounts.trialQuota') + ' ' + data.trialUsage.text) + '</span>' : '';
-      const usageCell = a.isApiKeyAccount ? '<div class="account-list-cell account-list-usage"></div>' :
-        '<div class="account-list-cell account-list-usage" title="' + escapeAttr(usageTitle) + '"><span class="list-cell-label">' + escapeHtml(t('accounts.usage')) + '</span><strong>' + escapeHtml(usageText) + '</strong>' + overageText + trialText + (data.mainUsage.visible ? '<div class="usage-bar list-usage-bar"><div class="usage-fill ' + escapeAttr(data.mainUsage.className) + '" data-usage-pct="' + escapeAttr(data.mainUsage.barPct) + '"></div></div>' : '') + '</div>';
+      // Show usage for API-key Accounts (management.kiro.dev quota). Skip overage/
+      // trial chips that only apply to OAuth overage toggles when absent.
+      const usageCell =
+        '<div class="account-list-cell account-list-usage" title="' + escapeAttr(usageTitle) + '"><span class="list-cell-label">' + escapeHtml(t('accounts.usage')) + '</span><strong>' + escapeHtml(usageText) + '</strong>' + (a.isApiKeyAccount ? '' : overageText) + trialText + (data.mainUsage.visible ? '<div class="usage-bar list-usage-bar"><div class="usage-fill ' + escapeAttr(data.mainUsage.className) + '" data-usage-pct="' + escapeAttr(data.mainUsage.barPct) + '"></div></div>' : '') + '</div>';
       return '<div class="account-list-row' + (isSelected ? ' selected' : '') + '" data-id="' + idAttr + '">' +
         '<div class="account-list-cell account-list-check"><input type="checkbox" class="account-checkbox" ' + (isSelected ? 'checked' : '') + ' data-id="' + idAttr + '" aria-label="' + escapeAttr(selectLabel) + '" /></div>' +
         '<div class="account-list-cell account-list-identity"><div class="account-title-row"><span class="account-email">' + escapeHtml(data.displayEmail) + '</span>' + renderPrimaryStatus(a) + '</div><div class="account-meta-line"><span>' + escapeHtml(tier) + '</span><span>' + escapeHtml(formatAuthMethod(a.provider || a.authMethod)) + '</span></div></div>' +
@@ -1943,9 +1941,8 @@
       const healthScore = Number.isFinite(Number(a.healthScore)) ? Number(a.healthScore) : 0;
       const metrics = renderMetric(t('accounts.health'), healthScore || '-', 'health') +
         renderMetric(t('accounts.rate429'), formatPercent(a.recent429Rate), Number(a.recent429Rate || 0) > 0 ? 'danger' : 'ok') +
-        (a.isApiKeyAccount ? '' :
-          renderMetric(t('accounts.usage'), mainUsage.visible ? mainUsage.text : '-', mainUsage.className === 'critical' ? 'danger' : mainUsage.className === 'high' ? 'warn' : 'ok') +
-          renderMetric(t('accounts.expiry'), formatTokenExpiry(a.expiresAt), isTokenIssue(a) ? 'danger' : 'default'));
+        renderMetric(t('accounts.usage'), mainUsage.visible ? mainUsage.text : '-', mainUsage.className === 'critical' ? 'danger' : mainUsage.className === 'high' ? 'warn' : 'ok') +
+        (a.isApiKeyAccount ? '' : renderMetric(t('accounts.expiry'), formatTokenExpiry(a.expiresAt), isTokenIssue(a) ? 'danger' : 'default'));
       const secondary = [
         getTrialBadge(a),
         renderOverageBadge(a),
@@ -2232,15 +2229,15 @@
     const subscriptionHtml =
       '<div class="detail-grid detail-grid-compact">' +
       detailItem(t('detail.subscriptionType'), a.subscriptionTitle || (a.subscriptionType ? formatSubscriptionLabel(a.subscriptionType) : '-')) +
+      detailItem(t('detail.mainQuota'), mainUsage.visible ? mainUsage.text : ((a.usageCurrent != null || a.usageLimit != null) ? formatUsageQuota(a.usageCurrent || 0, a.usageLimit || 0) : '-')) +
+      detailItem(t('detail.resetDate'), a.nextResetDate || '-') +
       (a.isApiKeyAccount ? '' :
-        detailItem(t('detail.mainQuota'), mainUsage.visible ? mainUsage.text : '-') +
-        detailItem(t('detail.resetDate'), a.nextResetDate || '-') +
-        detailItem(t('detail.tokenExpiry'), a.expiresAt ? new Date(a.expiresAt * 1000).toLocaleString() : '-') +
-        (a.trialUsageLimit > 0 ?
+        detailItem(t('detail.tokenExpiry'), a.expiresAt ? new Date(a.expiresAt * 1000).toLocaleString() : '-')) +
+      (a.trialUsageLimit > 0 ?
         detailItem(t('detail.trialQuota'), (a.trialUsageCurrent != null ? a.trialUsageCurrent.toFixed(1) : 0) + ' / ' + a.trialUsageLimit.toFixed(0)) +
         detailItem(t('detail.trialStatus'), a.trialStatus || '-') +
         detailItem(t('detail.trialExpiry'), a.trialExpiresAt ? new Date(a.trialExpiresAt * 1000).toLocaleString() : '-')
-        : '')) +
+        : '') +
       '</div>';
     const settingsHtml =
       '<div class="detail-edit-list">' +

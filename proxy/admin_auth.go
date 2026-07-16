@@ -463,11 +463,22 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			Enabled:     true,
 			MachineId:   config.GenerateMachineId(),
 		}
-		// Auto-detect the management/runtime region that accepts this ksk_ key.
-		if info, region, err := probeApiKeyServingRegion(&account); err == nil {
-			applyApiKeyProbeResult(&account, info, region)
-		} else {
-			logger.Warnf("[Import] API-key Account region probe failed (importing with region=%s): %v", account.Region, err)
+		// Validate against management.{region}.kiro.dev and capture live quota /
+		// subscription (same as the dedicated ApiKey fork). Hard-fail if the key
+		// is rejected in every probed region so we never store a dead key with 0/0.
+		info, region, err := probeApiKeyServingRegion(&account)
+		if err != nil || info == nil {
+			msg := "API key validation failed"
+			if err != nil {
+				msg = "API key validation failed: " + err.Error()
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": msg})
+			return
+		}
+		applyApiKeyProbeResult(&account, info, region)
+		if strings.TrimSpace(account.Provider) == "" {
+			account.Provider = "API Key"
 		}
 		if err := config.AddAccount(account); err != nil {
 			w.WriteHeader(500)
@@ -475,12 +486,25 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.pool.Reload()
+		// Warm the models cache with the validated regional key.
+		if account.Enabled && account.AccessToken != "" {
+			go func(acc config.Account) {
+				if err := h.fetchAndCacheAccountModels(&acc); err != nil {
+					logger.Warnf("[ModelsCache] Auto-refresh failed for new API-key Account %s: %v", acc.Email, err)
+				}
+			}(account)
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"account": map[string]interface{}{
-				"id":     account.ID,
-				"email":  account.Email,
-				"region": account.Region,
+				"id":             account.ID,
+				"email":          account.Email,
+				"region":         account.Region,
+				"subscription":   account.SubscriptionTitle,
+				"usageCurrent":   account.UsageCurrent,
+				"usageLimit":     account.UsageLimit,
+				"usagePercent":   account.UsagePercent,
+				"nextResetDate":  account.NextResetDate,
 			},
 		})
 		return

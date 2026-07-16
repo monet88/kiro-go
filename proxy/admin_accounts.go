@@ -177,15 +177,24 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	// Static ksk_ keys are regional on management/runtime.kiro.dev. Probe the
 	// given region first, then common regions, so a wrong default (us-east-1)
-	// still lands on the serving region (often eu-central-1). Soft on failure:
-	// persist with the operator-supplied region so offline/dev keys still add.
+	// still lands on the serving region (often eu-central-1). Hard-fail when the
+	// key is invalid everywhere so the admin list always has real quota data.
 	if account.IsApiKeyCredential() {
-		if info, region, err := probeApiKeyServingRegion(&account); err == nil {
-			applyApiKeyProbeResult(&account, info, region)
-			logger.Infof("[Admin] API-key Account validated in region %s email=%s", region, account.Email)
-		} else {
-			logger.Warnf("[Admin] API-key Account region probe failed (saving with region=%s): %v", account.Region, err)
+		info, region, err := probeApiKeyServingRegion(&account)
+		if err != nil || info == nil {
+			msg := "API key validation failed"
+			if err != nil {
+				msg = "API key validation failed: " + err.Error()
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": msg})
+			return
 		}
+		applyApiKeyProbeResult(&account, info, region)
+		if strings.TrimSpace(account.Provider) == "" {
+			account.Provider = "API Key"
+		}
+		logger.Infof("[Admin] API-key Account validated in region %s email=%s usage=%.1f/%.1f", region, account.Email, account.UsageCurrent, account.UsageLimit)
 	}
 
 	if err := config.AddAccount(account); err != nil {

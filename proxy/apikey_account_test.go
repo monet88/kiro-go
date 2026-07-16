@@ -13,6 +13,33 @@ import (
 	"time"
 )
 
+
+// stubApiKeyRegionProbe makes add/import paths succeed offline with fake quota
+// metadata so dual-write/normalization tests do not hit management.kiro.dev.
+func stubApiKeyRegionProbe(t *testing.T, region string) {
+	t.Helper()
+	if region == "" {
+		region = "eu-central-1"
+	}
+	restore := setProbeApiKeyServingRegionForTest(func(account *config.Account) (*config.AccountInfo, string, error) {
+		info := &config.AccountInfo{
+			Email:             account.Email,
+			SubscriptionType:  "PRO",
+			SubscriptionTitle: "KIRO PRO",
+			UsageCurrent:      12,
+			UsageLimit:        5000,
+			UsagePercent:      12.0 / 5000.0,
+			NextResetDate:     "2099-01-01",
+			LastRefresh:       time.Now().Unix(),
+		}
+		if info.Email == "" {
+			info.Email = "apikey@example.com"
+		}
+		return info, region, nil
+	})
+	t.Cleanup(restore)
+}
+
 // TestApiKeyAccountSendsApiKeyTokenType verifies outbound auth for an API-key
 // Account announces TokenType: API_KEY and sends the static ksk_… as the bearer
 // (ADR-0002).
@@ -202,6 +229,7 @@ func TestApiAddAccountApiKeyDualWrite(t *testing.T) {
 	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("config.Init: %v", err)
 	}
+	stubApiKeyRegionProbe(t, "eu-central-1")
 	h := &Handler{pool: accountpool.GetPool()}
 
 	body := `{"kiroApiKey":"ksk_added","authMethod":"apikey","email":"ops@example.com","enabled":true}`
@@ -222,8 +250,11 @@ func TestApiAddAccountApiKeyDualWrite(t *testing.T) {
 	if acc.MachineId == "" {
 		t.Fatalf("expected MachineId to be generated for API-key Account add path")
 	}
-	if acc.Region != "us-east-1" {
-		t.Fatalf("Region = %q, want us-east-1 default", acc.Region)
+	if acc.Region != "eu-central-1" {
+		t.Fatalf("Region = %q, want probed eu-central-1", acc.Region)
+	}
+	if acc.UsageLimit != 5000 {
+		t.Fatalf("UsageLimit = %v, want 5000 from probe", acc.UsageLimit)
 	}
 }
 
@@ -322,6 +353,7 @@ func TestApiImportCredentialsApiKeyAccount(t *testing.T) {
 	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("config.Init: %v", err)
 	}
+	stubApiKeyRegionProbe(t, "eu-central-1")
 	h := &Handler{pool: accountpool.GetPool()}
 
 	body := `{"kiroApiKey":"ksk_imported","authMethod":"api_key","email":"imp@example.com"}`
@@ -348,6 +380,7 @@ func TestApiImportCredentialsApiKeyAcceptsAccessTokenAlias(t *testing.T) {
 	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("config.Init: %v", err)
 	}
+	stubApiKeyRegionProbe(t, "eu-central-1")
 	h := &Handler{pool: accountpool.GetPool()}
 
 	body := `{"accessToken":"ksk_legacy","authMethod":"api_key","email":"legacy@example.com"}`
