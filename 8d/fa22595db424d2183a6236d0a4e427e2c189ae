@@ -1,0 +1,31 @@
+proxy/responses_handler.go
+  s_b796aef1e7df4b::t_5019455d070b02 214
+  s_8b70cf5dd48ed1::t_11bc136e3d3df1 192-197,439,525,545,564,589,606
+  s_b796aef1e7df4b::t_eb81a464338589 250,253-267,371,373,381-382,384-385,392,394,401-402,404-405,413-421,426-438,440-448,457,459-460,463-524,526-544,546-563,565-588,590-605,616,619-622,680-684,718
+proxy/responses_handler_test.go
+  s_b796aef1e7df4b::t_08ca24fe1a9e4f 280-285,400-488
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8dfa22595db424d2183a6236d0a4e427e2c189ae",
+  "prompts": {},
+  "sessions": {
+    "s_8b70cf5dd48ed1": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "79bff188-3669-421b-b75c-6b0d932b1c4b",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_b796aef1e7df4b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "43b9e876-f7b4-4b48-b982-7400aa99aabe",
+        "model": "gpt-4.1"
+      },
+      "human_author": null
+    }
+  }
+}
