@@ -166,6 +166,27 @@ func TestAddAccountRejectsMaskedApiKey(t *testing.T) {
 	}
 }
 
+func TestAddAccountRejectsDuplicateKiroApiKey(t *testing.T) {
+	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("init config: %v", err)
+	}
+	if err := AddAccount(Account{ID: "first", KiroApiKey: "ksk_same", AuthMethod: "api_key", Enabled: true}); err != nil {
+		t.Fatalf("seed first API-key Account: %v", err)
+	}
+	if !KiroApiKeyExists("ksk_same") {
+		t.Fatal("expected KiroApiKeyExists to report the seeded key")
+	}
+	if err := AddAccount(Account{ID: "second", KiroApiKey: "ksk_same", AuthMethod: "api_key", Enabled: true}); err == nil {
+		t.Fatal("expected AddAccount to reject a duplicate Kiro API Key")
+	}
+	if AccountIDExists("second") {
+		t.Fatal("duplicate API-key Account was persisted")
+	}
+	if got := len(GetAccounts()); got != 1 {
+		t.Fatalf("account count = %d, want 1", got)
+	}
+}
+
 func TestAddAccountsSkipsApiKeyAccounts(t *testing.T) {
 	if err := Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("init config: %v", err)

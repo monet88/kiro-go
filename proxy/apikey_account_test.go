@@ -349,6 +349,34 @@ func TestApiGetAccountsHidesApiKeyOAuthMetadata(t *testing.T) {
 
 // TestApiImportCredentialsApiKeyAccount verifies the import-one path creates an
 // API-key Account without any OAuth refresh round-trip and honors the dual-write.
+func TestApiImportCredentialsRejectsDuplicateApiKey(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{
+		ID:         "existing",
+		KiroApiKey: "ksk_dup",
+		AuthMethod: "api_key",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed existing API-key Account: %v", err)
+	}
+	h := &Handler{pool: accountpool.GetPool()}
+	h.pool.Reload()
+
+	body := `{"kiroApiKey":"ksk_dup","authMethod":"api_key","region":"eu-central-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/credentials", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.apiImportCredentials(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate Kiro API Key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := len(config.GetAccounts()); got != 1 {
+		t.Fatalf("duplicate import created extra accounts: count=%d accounts=%+v", got, config.GetAccounts())
+	}
+}
+
 func TestApiImportCredentialsApiKeyAccount(t *testing.T) {
 	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
 		t.Fatalf("config.Init: %v", err)

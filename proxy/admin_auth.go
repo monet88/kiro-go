@@ -445,6 +445,13 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": "masked Kiro API Keys cannot be imported"})
 			return
 		}
+		// Refuse before the live probe so a double-bound Add click or re-paste
+		// of the same ksk_ does not create a second pool entry / spend quota.
+		if config.KiroApiKeyExists(kiroKey) {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "this Kiro API Key is already registered"})
+			return
+		}
 		if req.Region == "" {
 			req.Region = "us-east-1"
 		}

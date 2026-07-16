@@ -3396,10 +3396,9 @@
       '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
       '<button class="btn btn-primary" id="kiroApiKeyAddBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
       '</div>';
-    // Click is also handled by the delegated #modalBody listener so the binding
-    // survives custom-select enhancement that may replace nodes.
-    var addBtn = body.querySelector('#kiroApiKeyAddBtn');
-    if (addBtn) addBtn.addEventListener('click', importApiKey);
+    // Do NOT bind importApiKey directly here. #modalBody has a delegated click
+    // listener for #kiroApiKeyAddBtn; a second binding was creating two accounts
+    // from a single Add click.
   }
   function modalBuilderId(title, body) {
     title.textContent = t('modal.builderIdTitle');
@@ -3771,51 +3770,65 @@
     toastPrimary(msg, { duration: 5200 });
     newIds.forEach(autoRefreshNewAccount);
   }
+  let importApiKeyInFlight = false;
   async function importApiKey() {
+    // Guard double-submit (double-bound click handlers or fast double-click).
+    if (importApiKeyInFlight) return;
     var inputEl = $('kiroApiKeyInput');
     if (!inputEl) return toastWarning(t('apiKey.missing'));
     var raw = (inputEl.value || '').trim();
     if (!raw) return toastWarning(t('apiKey.missing'));
     var regionEl = $('kiroApiKeyRegion');
     var region = regionEl ? (regionEl.value || '').trim() : '';
-    var keys = raw.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+    // De-dupe within the paste so "same key twice on two lines" is still one add.
+    var seenKeys = Object.create(null);
+    var keys = raw.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (k) {
+      if (!k || seenKeys[k]) return false;
+      seenKeys[k] = true;
+      return true;
+    });
     if (!keys.length) return toastWarning(t('apiKey.missing'));
     var btn = $('kiroApiKeyAddBtn');
+    importApiKeyInFlight = true;
     if (btn) { btn.disabled = true; btn.textContent = t('apiKey.checking'); }
     var ok = 0, fail = 0, firstId = null, lastErr = '', newIds = [];
-    for (var i = 0; i < keys.length; i++) {
-      try {
-        // Import path validates against management.{region}.kiro.dev and auto-
-        // detects the serving region when region is empty / wrong.
-        var res = await api('/auth/credentials', {
-          method: 'POST',
-          body: JSON.stringify({
-            kiroApiKey: keys[i],
-            accessToken: keys[i],
-            authMethod: 'api_key',
-            region: region,
-            refreshToken: '',
-            clientId: '',
-            clientSecret: ''
-          })
-        });
-        var d = await res.json().catch(function () { return {}; });
-        if (res.ok && d.success) {
-          ok++;
-          if (d.account && d.account.id) {
-            if (!firstId) firstId = d.account.id;
-            newIds.push(d.account.id);
+    try {
+      for (var i = 0; i < keys.length; i++) {
+        try {
+          // Import path validates against management.{region}.kiro.dev and auto-
+          // detects the serving region when region is empty / wrong.
+          var res = await api('/auth/credentials', {
+            method: 'POST',
+            body: JSON.stringify({
+              kiroApiKey: keys[i],
+              accessToken: keys[i],
+              authMethod: 'api_key',
+              region: region,
+              refreshToken: '',
+              clientId: '',
+              clientSecret: ''
+            })
+          });
+          var d = await res.json().catch(function () { return {}; });
+          if (res.ok && d.success) {
+            ok++;
+            if (d.account && d.account.id) {
+              if (!firstId) firstId = d.account.id;
+              newIds.push(d.account.id);
+            }
+          } else {
+            fail++;
+            lastErr = (d && d.error) || ('HTTP ' + res.status);
           }
-        } else {
+        } catch (e) {
           fail++;
-          lastErr = (d && d.error) || ('HTTP ' + res.status);
+          lastErr = String(e && e.message ? e.message : e);
         }
-      } catch (e) {
-        fail++;
-        lastErr = String(e && e.message ? e.message : e);
       }
+    } finally {
+      importApiKeyInFlight = false;
+      if (btn) { btn.disabled = false; btn.textContent = t('common.add'); }
     }
-    if (btn) { btn.disabled = false; btn.textContent = t('common.add'); }
     if (ok > 0) {
       closeModal();
       loadAccounts();

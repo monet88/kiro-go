@@ -153,8 +153,49 @@ func AddAccount(account Account) error {
 	if err := ValidateApiKeyCredential(account); err != nil {
 		return err
 	}
+	// API-key Accounts are keyed by the static ksk_ secret. Reject a second
+	// write of the same key so a double-click / double-bound UI handler cannot
+	// create two pool entries for one credential.
+	if account.IsApiKeyCredential() {
+		key := strings.TrimSpace(account.KiroApiKey)
+		for i := range cfg.Accounts {
+			existing := strings.TrimSpace(cfg.Accounts[i].KiroApiKey)
+			if existing == "" {
+				existing = strings.TrimSpace(cfg.Accounts[i].AccessToken)
+			}
+			if existing != "" && existing == key {
+				return errors.New("this Kiro API Key is already registered")
+			}
+		}
+	}
 	cfg.Accounts = append(cfg.Accounts, account)
 	return Save()
+}
+
+// KiroApiKeyExists reports whether any account already holds the given static
+// Kiro API Key (ksk_…). Used by credential import to refuse a duplicate before
+// spending an upstream probe, and as a read-side companion to AddAccount's
+// write-side guard.
+func KiroApiKeyExists(kiroApiKey string) bool {
+	key := strings.TrimSpace(kiroApiKey)
+	if key == "" {
+		return false
+	}
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	for i := range cfg.Accounts {
+		if !cfg.Accounts[i].IsApiKeyCredential() {
+			continue
+		}
+		existing := strings.TrimSpace(cfg.Accounts[i].KiroApiKey)
+		if existing == "" {
+			existing = strings.TrimSpace(cfg.Accounts[i].AccessToken)
+		}
+		if existing == key {
+			return true
+		}
+	}
+	return false
 }
 
 // AddAccounts appends multiple accounts in a single locked pass and persists
