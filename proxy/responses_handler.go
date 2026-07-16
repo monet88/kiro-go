@@ -189,7 +189,12 @@ func (h *Handler) handleResponsesNonStream(
 
 	if outcome.stopReason == routeStopSuccess {
 		account := okAccount
-		finalContent, _ := extractThinkingFromContent(content)
+		finalContent, extractedReasoning := extractThinkingFromContent(content)
+		// Explicit reasoningContentEvent wins; fall back to inline <thinking>
+		// tags extracted from the assistant text (mirrors the OpenAI handler).
+		if thinking && reasoningContent == "" && extractedReasoning != "" {
+			reasoningContent = extractedReasoning
+		}
 		if !thinking {
 			reasoningContent = ""
 		}
@@ -206,7 +211,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
+		respObj := buildResponsesObject(respID, model, finalContent, reasoningContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions
 
@@ -242,10 +247,24 @@ func (h *Handler) handleResponsesNonStream(
 }
 
 func buildResponsesObject(
-	id, model, content string, toolUses []KiroToolUse,
+	id, model, content, reasoning string, toolUses []KiroToolUse,
 	inputTokens, outputTokens int, req *ResponsesRequest,
 ) *ResponsesObject {
-	output := make([]ResponseOutputItem, 0, 1+len(toolUses))
+	output := make([]ResponseOutputItem, 0, 2+len(toolUses))
+
+	// A reasoning item precedes the message item (mirrors OpenAI's own Responses
+	// ordering: reasoning summary, then the assistant message).
+	if strings.TrimSpace(reasoning) != "" {
+		output = append(output, ResponseOutputItem{
+			ID:     generateOutputItemID("rs"),
+			Type:   "reasoning",
+			Status: "completed",
+			Summary: []ResponseSummaryPart{{
+				Type: "summary_text",
+				Text: reasoning,
+			}},
+		})
+	}
 
 	if strings.TrimSpace(content) != "" {
 		output = append(output, ResponseOutputItem{
@@ -349,8 +368,9 @@ func (h *Handler) handleResponsesStream(
 	// response.created / response.in_progress preamble does NOT set it, so a
 	// failure before any real output still fails over.
 	var (
-		fullText        strings.Builder
+		msgText         strings.Builder
 		reasoningText   strings.Builder
+		currentItemText strings.Builder
 		toolUses        []KiroToolUse
 		inputTokens     int
 		outputTokens    int
@@ -358,28 +378,31 @@ func (h *Handler) handleResponsesStream(
 		realInputTokens int
 		firstTokenAt    time.Time
 		finalContent    string
-		messageItemID   string
-		messageStarted  bool
+		currentItemType string
+		currentItemID   string
 		outputIndex     int
-		contentIndex    int
+		thinkingSource  thinkingStreamSource
+		dropTagThinking bool
 		responseStarted bool
 		okAccount       *config.Account
 	)
 
 	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
 		// Reset per-attempt state so a failover starts clean.
-		fullText.Reset()
+		msgText.Reset()
 		reasoningText.Reset()
+		currentItemText.Reset()
 		toolUses = nil
 		inputTokens, outputTokens = 0, 0
 		credits = 0
 		realInputTokens = 0
 		firstTokenAt = time.Time{}
 		finalContent = ""
-		messageItemID = generateOutputItemID("msg")
-		messageStarted = false
+		currentItemType = ""
+		currentItemID = ""
 		outputIndex = 0
-		contentIndex = 0
+		thinkingSource = thinkingSourceUnknown
+		dropTagThinking = false
 		responseStarted = false
 
 		send("response.in_progress", map[string]interface{}{
@@ -387,16 +410,42 @@ func (h *Handler) handleResponsesStream(
 			"response": initial,
 		})
 
-		ensureMessageStarted := func() {
-			if messageStarted {
-				return
-			}
-			messageStarted = true
+		// Item lifecycle helpers. Reasoning and message are SEPARATE output items
+		// (mirrors OpenAI's own Responses shape and sub2api): a reasoning item
+		// carries summary_text parts, a message item carries output_text parts.
+		// Only one item is open at a time; switching kind closes the current one
+		// and opens the next at a fresh output_index.
+		openReasoningItem := func() {
+			currentItemType = "reasoning"
+			currentItemID = generateOutputItemID("rs")
+			currentItemText.Reset()
 			send("response.output_item.added", map[string]interface{}{
 				"type":         "response.output_item.added",
 				"output_index": outputIndex,
 				"item": map[string]interface{}{
-					"id":      messageItemID,
+					"id":      currentItemID,
+					"type":    "reasoning",
+					"status":  "in_progress",
+					"summary": []map[string]interface{}{},
+				},
+			})
+			send("response.reasoning_summary_part.added", map[string]interface{}{
+				"type":          "response.reasoning_summary_part.added",
+				"item_id":       currentItemID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"part":          map[string]interface{}{"type": "summary_text", "text": ""},
+			})
+		}
+		openMessageItem := func() {
+			currentItemType = "message"
+			currentItemID = generateOutputItemID("msg")
+			currentItemText.Reset()
+			send("response.output_item.added", map[string]interface{}{
+				"type":         "response.output_item.added",
+				"output_index": outputIndex,
+				"item": map[string]interface{}{
+					"id":      currentItemID,
 					"type":    "message",
 					"role":    "assistant",
 					"status":  "in_progress",
@@ -405,14 +454,155 @@ func (h *Handler) handleResponsesStream(
 			})
 			send("response.content_part.added", map[string]interface{}{
 				"type":          "response.content_part.added",
-				"item_id":       messageItemID,
+				"item_id":       currentItemID,
 				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"part": map[string]interface{}{
-					"type": "output_text",
-					"text": "",
-				},
+				"content_index": 0,
+				"part":          map[string]interface{}{"type": "output_text", "text": ""},
 			})
+		}
+		closeItem := func() {
+			switch currentItemType {
+			case "message":
+				text := currentItemText.String()
+				send("response.output_text.done", map[string]interface{}{
+					"type":          "response.output_text.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"content_index": 0,
+					"text":          text,
+				})
+				send("response.content_part.done", map[string]interface{}{
+					"type":          "response.content_part.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"content_index": 0,
+					"part":          map[string]interface{}{"type": "output_text", "text": text},
+				})
+				send("response.output_item.done", map[string]interface{}{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      currentItemID,
+						"type":    "message",
+						"role":    "assistant",
+						"status":  "completed",
+						"content": []map[string]interface{}{{"type": "output_text", "text": text}},
+					},
+				})
+			case "reasoning":
+				text := currentItemText.String()
+				send("response.reasoning_summary_text.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_text.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"summary_index": 0,
+					"text":          text,
+				})
+				send("response.reasoning_summary_part.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"summary_index": 0,
+					"part":          map[string]interface{}{"type": "summary_text", "text": text},
+				})
+				send("response.output_item.done", map[string]interface{}{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      currentItemID,
+						"type":    "reasoning",
+						"status":  "completed",
+						"summary": []map[string]interface{}{{"type": "summary_text", "text": text}},
+					},
+				})
+			default:
+				return
+			}
+			currentItemType = ""
+			currentItemID = ""
+			currentItemText.Reset()
+			outputIndex++
+		}
+
+		emitText := func(text string) {
+			if text == "" {
+				return
+			}
+			if currentItemType != "message" {
+				closeItem()
+				openMessageItem()
+			}
+			msgText.WriteString(text)
+			currentItemText.WriteString(text)
+			send("response.output_text.delta", map[string]interface{}{
+				"type":          "response.output_text.delta",
+				"item_id":       currentItemID,
+				"output_index":  outputIndex,
+				"content_index": 0,
+				"delta":         text,
+			})
+			responseStarted = true
+		}
+		emitReasoning := func(text string) {
+			if text == "" || !thinking {
+				return
+			}
+			if currentItemType != "reasoning" {
+				closeItem()
+				openReasoningItem()
+			}
+			reasoningText.WriteString(text)
+			currentItemText.WriteString(text)
+			send("response.reasoning_summary_text.delta", map[string]interface{}{
+				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       currentItemID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"delta":         text,
+			})
+			responseStarted = true
+		}
+
+		// Splitter separates plain assistant text from inline <thinking> blocks
+		// so a literal tag never opens a phantom reasoning item, and real
+		// reasoning is routed into a reasoning output item instead of leaking
+		// raw <thinking> markers into output_text deltas (the previous bug).
+		splitter := &thinkingSplitter{
+			onPlain: func(t string) { emitText(t) },
+			onOpen:  func() { dropTagThinking = !allowTagSource(&thinkingSource) },
+			onThinking: func(t string) {
+				if dropTagThinking {
+					return
+				}
+				emitReasoning(t)
+			},
+			onClose: func() {
+				wasDrop := dropTagThinking
+				dropTagThinking = false
+				if wasDrop {
+					return
+				}
+				if currentItemType == "reasoning" {
+					closeItem()
+				}
+			},
+		}
+
+		processText := func(text string, isThinking bool, forceFlush bool) {
+			if isThinking {
+				if !thinking {
+					return
+				}
+				if !allowReasoningSource(&thinkingSource) {
+					return
+				}
+				emitReasoning(text)
+				return
+			}
+			splitter.push(text)
+			if forceFlush {
+				splitter.flush()
+			}
 		}
 
 		callback := &KiroStreamCallback{
@@ -423,50 +613,13 @@ func (h *Handler) handleResponsesStream(
 				if firstTokenAt.IsZero() {
 					firstTokenAt = time.Now()
 				}
-				if isThinking {
-					reasoningText.WriteString(text)
-					return
-				}
-				fullText.WriteString(text)
-				ensureMessageStarted()
-				send("response.output_text.delta", map[string]interface{}{
-					"type":          "response.output_text.delta",
-					"item_id":       messageItemID,
-					"output_index":  outputIndex,
-					"content_index": contentIndex,
-					"delta":         text,
-				})
-				responseStarted = true
+				processText(text, isThinking, false)
 			},
 			OnToolUse: func(tu KiroToolUse) {
-				if messageStarted {
-					send("response.content_part.done", map[string]interface{}{
-						"type":          "response.content_part.done",
-						"item_id":       messageItemID,
-						"output_index":  outputIndex,
-						"content_index": contentIndex,
-						"part": map[string]interface{}{
-							"type": "output_text",
-							"text": fullText.String(),
-						},
-					})
-					send("response.output_item.done", map[string]interface{}{
-						"type":         "response.output_item.done",
-						"output_index": outputIndex,
-						"item": map[string]interface{}{
-							"id":     messageItemID,
-							"type":   "message",
-							"role":   "assistant",
-							"status": "completed",
-							"content": []map[string]interface{}{{
-								"type": "output_text",
-								"text": fullText.String(),
-							}},
-						},
-					})
-					messageStarted = false
-					outputIndex++
-				}
+				// Flush buffered tagged text and close any open reasoning/message
+				// item before the function_call item opens.
+				processText("", false, true)
+				closeItem()
 
 				toolUses = append(toolUses, tu)
 				args, _ := json.Marshal(tu.Input)
@@ -524,35 +677,11 @@ func (h *Handler) handleResponsesStream(
 			return attemptStop(err, true)
 		}
 
-		// Flush the trailing message item while the slot is still held (model
-		// output, not a terminal control frame).
-		finalContent, _ = extractThinkingFromContent(fullText.String())
-		if messageStarted {
-			send("response.content_part.done", map[string]interface{}{
-				"type":          "response.content_part.done",
-				"item_id":       messageItemID,
-				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"part": map[string]interface{}{
-					"type": "output_text",
-					"text": finalContent,
-				},
-			})
-			send("response.output_item.done", map[string]interface{}{
-				"type":         "response.output_item.done",
-				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":     messageItemID,
-					"type":   "message",
-					"role":   "assistant",
-					"status": "completed",
-					"content": []map[string]interface{}{{
-						"type": "output_text",
-						"text": finalContent,
-					}},
-				},
-			})
-		}
+		// Flush buffered model output and close the open item while the slot is
+		// still held (model output, not a terminal control frame).
+		processText("", false, true)
+		closeItem()
+		finalContent = msgText.String()
 		okAccount = account
 		return attemptSuccess()
 	})
@@ -586,7 +715,7 @@ func (h *Handler) handleResponsesStream(
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
+		respObj := buildResponsesObject(respID, model, finalContent, reasoning, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions

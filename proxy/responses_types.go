@@ -39,12 +39,21 @@ type ResponseOutputItem struct {
 	Role      string                `json:"role,omitempty"`
 	Status    string                `json:"status,omitempty"`
 	Content   []ResponseContentPart `json:"content,omitempty"`
+	Summary   []ResponseSummaryPart `json:"summary,omitempty"`
 	CallID    string                `json:"call_id,omitempty"`
 	Name      string                `json:"name,omitempty"`
 	Arguments string                `json:"arguments,omitempty"`
 }
 
 type ResponseContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+// ResponseSummaryPart is one entry in a type=reasoning output item's summary
+// array. The Responses API renders reasoning as summary_text parts, mirroring
+// OpenAI's own reasoning items.
+type ResponseSummaryPart struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
 }
