@@ -1,0 +1,19 @@
+proxy/websearch.go
+  s_8b70cf5dd48ed1::t_c997f201440c05 472-477,481-482,484-486,488,493-494,496,498-514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "61bd4a0160e5740fe4b9a2907ca0e7e224bd5e85",
+  "prompts": {},
+  "sessions": {
+    "s_8b70cf5dd48ed1": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "79bff188-3669-421b-b75c-6b0d932b1c4b",
+        "model": "unknown"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
