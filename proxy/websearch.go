@@ -469,44 +469,50 @@ func (h *Handler) fetchWebSearchResults(ctx context.Context, query, apiKeyID, mo
 		return nil, nil, false, buildErr
 	}
 
-	excluded := make(map[string]bool)
-	var lastAccount *config.Account
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		acct, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, apiKeyID)
-		if acquireErr != nil {
-			return nil, lastAccount, false, acquireErr
-		}
-		if tokenErr := h.ensureValidToken(acct); tokenErr != nil {
-			release()
-			lastAccount = acct
-			excluded[acct.ID] = true
-			h.handleAccountFailure(acct, tokenErr)
-			continue
-		}
-
+	// Account Routing owns the acquire/token/release/failover/backoff loop. The
+	// callback performs one MCP search against the routed Account and classifies
+	// the outcome. web_search forwards apiKeyID as the affinity key, as before.
+	var okResults *webSearchResults
+	var okAccount *config.Account
+	outcome := h.runWithAccount(ctx, model, apiKeyID, func(acct *config.Account) attemptResult {
 		respBody, callErr := callKiroMCP(ctx, acct, body)
-		release()
-		lastAccount = acct
 		if callErr != nil {
-			h.handleAccountFailure(acct, callErr)
 			if IsKiroRetryableAccountError(callErr) {
-				excluded[acct.ID] = true
-				continue
+				// Account-attributable and retryable: penalise + fail over.
+				return attemptRetry(callErr)
 			}
-			// Non-retryable: degrade gracefully but mark as failed for metrics.
+			// Non-retryable upstream fault: still the Account's fault (matches the
+			// prior handleAccountFailure call), but we cannot fail over — stop and
+			// let the caller degrade gracefully.
 			logger.Warnf("[WebSearch] MCP call failed (non-retryable): %v", callErr)
-			return nil, acct, true, nil
+			return attemptStop(callErr, true)
 		}
 
 		parsed, parseErr := parseMCPSearchResults(respBody)
 		if parseErr != nil {
+			// Parsing is caller-local work: a parse failure is NOT the Account's
+			// fault, so it must not penalise the Account. Stop and degrade.
 			logger.Warnf("[WebSearch] failed to parse MCP results: %v", parseErr)
-			return nil, acct, true, nil
+			return attemptStop(parseErr, false)
 		}
-		return parsed, acct, false, nil
+		okResults = parsed
+		okAccount = acct
+		return attemptSuccess()
+	})
+
+	switch outcome.stopReason {
+	case routeStopSuccess:
+		return okResults, okAccount, false, nil
+	case routeStopRoutingLimit, routeStopUnavailable:
+		// Could not perform the search at all (queue full/timeout, or empty pool
+		// with no attempt made): surface the acquire error so the caller renders
+		// 429 (routing-limit) or 503 (no accounts).
+		return nil, outcome.lastAccount, false, outcome.acquireErr
+	default:
+		// caller-terminal (non-retryable MCP / parse error), exhausted retries, or
+		// a cancelled request: degrade gracefully but mark as failed for metrics.
+		return nil, outcome.lastAccount, true, nil
 	}
-	// Exhausted retries: degrade gracefully but mark as failed for metrics.
-	return nil, lastAccount, true, nil
 }
 
 // ==================== Handler entry ====================
