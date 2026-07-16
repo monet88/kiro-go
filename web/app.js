@@ -3381,19 +3381,23 @@
   }
   function modalApiKey(title, body) {
     title.textContent = t('modal.apiKeyTitle');
+    // Use kiroApiKey* ids — never reuse settings gateway ids like addApiKeyBtn
+    // (document.getElementById returns the first match, so a collision would
+    // bind this handler to Settings → "Add API Key" and leave the modal button dead).
     body.innerHTML =
       '<p class="help-block">' + escapeHtml(t('modal.apiKeyDesc')) + '</p>' +
       '<div class="form-group"><label>' + escapeHtml(t('apiKey.value')) + '</label>' +
-      '<input type="password" id="apiKeyValue" class="font-mono" autocomplete="off" /></div>' +
+      '<input type="password" id="kiroApiKeyValue" class="font-mono" autocomplete="off" /></div>' +
       '<div class="form-group"><label>' + escapeHtml(t('detail.email')) + '</label>' +
-      '<input type="text" id="apiKeyEmail" autocomplete="email" /></div>' +
+      '<input type="text" id="kiroApiKeyEmail" autocomplete="email" /></div>' +
       '<div class="form-group"><label>' + escapeHtml(t('detail.region')) + '</label>' +
-      '<input type="text" id="apiKeyRegion" value="us-east-1" /></div>' +
+      '<input type="text" id="kiroApiKeyRegion" value="us-east-1" /></div>' +
       '<div class="modal-footer">' +
       '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
-      '<button class="btn btn-primary" id="addApiKeyBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
+      '<button class="btn btn-primary" id="addKiroApiKeyAccountBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
       '</div>';
-    $('addApiKeyBtn').addEventListener('click', addApiKeyAccount);
+    const addBtn = body.querySelector('#addKiroApiKeyAccountBtn');
+    if (addBtn) addBtn.addEventListener('click', addApiKeyAccount);
   }
   function modalBuilderId(title, body) {
     title.textContent = t('modal.builderIdTitle');
@@ -3766,20 +3770,24 @@
     newIds.forEach(autoRefreshNewAccount);
   }
   async function addApiKeyAccount() {
-    const kiroApiKey = $('apiKeyValue').value.trim();
+    const valueEl = $('kiroApiKeyValue');
+    const emailEl = $('kiroApiKeyEmail');
+    const regionEl = $('kiroApiKeyRegion');
+    if (!valueEl) return toastWarning(t('apiKey.missing'));
+    const kiroApiKey = valueEl.value.trim();
     if (!kiroApiKey) return toastWarning(t('apiKey.missing'));
     const payload = {
       kiroApiKey,
       authMethod: 'api_key',
-      email: $('apiKeyEmail').value.trim(),
-      region: $('apiKeyRegion').value.trim() || 'us-east-1',
+      email: emailEl ? emailEl.value.trim() : '',
+      region: (regionEl && regionEl.value.trim()) || 'us-east-1',
       enabled: true
     };
     try {
       const res = await api('/accounts', { method: 'POST', body: JSON.stringify(payload) });
-      const d = await res.json();
+      const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.success) {
-        toastError(t('common.failed') + ': ' + (d.error || ''));
+        toastError(t('common.failed') + ': ' + (d.error || ('HTTP ' + res.status)));
         return;
       }
       closeModal();

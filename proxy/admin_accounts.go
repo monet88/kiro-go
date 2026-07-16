@@ -161,6 +161,11 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	if account.Region == "" {
 		account.Region = "us-east-1"
 	}
+	// Match other add-account auth paths so request tracking headers are present
+	// immediately (API-key Accounts skip OAuth login which would mint a machine id).
+	if account.MachineId == "" {
+		account.MachineId = config.GenerateMachineId()
+	}
 	// Enforce the API-key Account invariants on the local copy too (config.AddAccount
 	// normalizes what it persists, but the copy below drives the model-fetch guard and
 	// response): AuthMethod→api_key and AccessToken mirrored from KiroApiKey (ADR-0002).
@@ -172,7 +177,8 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := config.AddAccount(account); err != nil {
-		w.WriteHeader(500)
+		logger.Warnf("[Admin] add account failed: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}

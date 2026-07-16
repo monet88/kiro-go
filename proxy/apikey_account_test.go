@@ -199,6 +199,12 @@ func TestApiAddAccountApiKeyDualWrite(t *testing.T) {
 	if acc.AccessToken != "ksk_added" || acc.KiroApiKey != "ksk_added" {
 		t.Fatalf("dual-write violated: AccessToken=%q KiroApiKey=%q", acc.AccessToken, acc.KiroApiKey)
 	}
+	if acc.MachineId == "" {
+		t.Fatalf("expected MachineId to be generated for API-key Account add path")
+	}
+	if acc.Region != "us-east-1" {
+		t.Fatalf("Region = %q, want us-east-1 default", acc.Region)
+	}
 }
 
 func TestApiAddAccountApiKeyRequiresSecret(t *testing.T) {
