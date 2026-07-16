@@ -143,6 +143,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	var thinkingStarted bool
 	var eventThinkingOpen bool
 	responseStarted := false
+	var okAccount *config.Account
 
 	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
 		// Reset per-attempt state so a failover starts clean.
@@ -436,34 +437,29 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				return attemptRetry(err)
 			}
 			// Output already committed: we cannot change the HTTP status or fail
-			// over. Record the failure and close the SSE stream cleanly inline
-			// (the caller holds the SSE/chatID context), then stop.
-			h.recordFailure()
-			statusCode, errType := metricsErrorDetails(err, http.StatusInternalServerError, "api_error")
-			recordRequestMetrics("openai", model, true, account, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
-			closeChunk := map[string]interface{}{
-				"id":      chatID,
-				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
-				"model":   model,
-				"choices": []map[string]interface{}{{
-					"index":         0,
-					"delta":         map[string]interface{}{},
-					"finish_reason": "stop",
-				}},
-			}
-			if data, mErr := json.Marshal(closeChunk); mErr == nil {
-				sse.WriteData(string(data))
-			}
-			sse.WriteData("[DONE]")
+			// over. Stop; the caller renders the SSE close after the slot is
+			// released (terminal frames must not hold the routing slot).
 			return attemptStop(err, true)
 		}
 
+		// Flush any remaining buffered model output while the slot is still held
+		// (this is model output, not a terminal control frame).
 		processText("", false, true)
 		if eventThinkingOpen {
 			sendChunk("", 3)
 		}
+		okAccount = account
+		return attemptSuccess()
+	})
 
+	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+
+	// Success: the slot is released; write the terminal control frame + [DONE]
+	// and record success bookkeeping now.
+	if outcome.stopReason == routeStopSuccess {
+		account := okAccount
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
@@ -516,15 +512,30 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		data, _ := json.Marshal(chunk)
 		sse.WriteData(string(data))
 		sse.WriteData("[DONE]")
-		return attemptSuccess()
-	})
-
-	// Success and the committed-terminal case already rendered inside the
-	// callback. The remaining branches are the not-yet-committed failures.
-	if outcome.stopReason == routeStopSuccess || outcome.stopReason == routeStopCallerTerminal {
 		return
 	}
-	if outcome.stopReason == routeStopCanceled {
+
+	// Output already committed then the upstream failed: close the SSE stream
+	// cleanly now that the slot is released.
+	if outcome.stopReason == routeStopCallerTerminal {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "api_error")
+		recordRequestMetrics("openai", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
+		closeChunk := map[string]interface{}{
+			"id":      chatID,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]interface{}{{
+				"index":         0,
+				"delta":         map[string]interface{}{},
+				"finish_reason": "stop",
+			}},
+		}
+		if data, mErr := json.Marshal(closeChunk); mErr == nil {
+			sse.WriteData(string(data))
+		}
+		sse.WriteData("[DONE]")
 		return
 	}
 
