@@ -29,6 +29,12 @@ _Avoid_: API-key Account
 **AuthMethod**:
 The Account field that selects upstream auth behavior: `idc`, `social`, `external_idp`, or (Wave C) `api_key`.
 
+### Routing
+
+**Account Routing**:
+The select-and-try-Accounts lifecycle of one outbound request: acquire a routing slot (honouring conversation affinity) → ensure the Account's token is valid → run the caller's work against it → release the slot → on an Account-attributable failure, classify the Account and fail over to the next, backing off first when the error warrants it. Owned by one module (`runWithAccount`) that knows nothing about HTTP/SSE/protocol; callers hand it an attempt callback and read back a `routeOutcome` (last Account, last typed upstream error, and a stop reason: `success`, `exhausted`, `unavailable`, `routing-limit`, `canceled`, `caller-terminal`). The `excluded` map is internal to the module.
+_Avoid_: retry loop, failover loop (unqualified), acquire/release dance
+
 ### Stream & payload
 
 **Stream Keepalive**:
