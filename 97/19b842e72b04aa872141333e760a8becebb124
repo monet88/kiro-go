@@ -1,0 +1,32 @@
+web/app.js
+  s_11e37aaadafb0b::t_d543927d334c3f 3773-3777,3782-3783,3788,3790
+  s_7752dcb8dbf840::t_7077ed5f529d78 3384-3386,3390,3392,3394,3397,3399-3400
+proxy/admin_accounts.go
+  s_11e37aaadafb0b::t_c52f6394a8676e 164-168,180-181
+proxy/apikey_account_test.go
+  s_11e37aaadafb0b::t_9340000f207565 202-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "9719b842e72b04aa872141333e760a8becebb124",
+  "prompts": {},
+  "sessions": {
+    "s_11e37aaadafb0b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d8522cdc-2054-43a9-b035-46a27d0fbeb4",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_7752dcb8dbf840": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "c3ed0a6f-969e-4ef2-b358-c24c2e6a2a55",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
