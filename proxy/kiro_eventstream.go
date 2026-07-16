@@ -110,8 +110,13 @@ func parseEventStream(ctx context.Context, body io.Reader, callback *KiroStreamC
 					callback.OnContextUsage(pct)
 				}
 			}
+		case "metadataEvent":
+			// Upstream end-of-turn metadata (stopReason TOOL_USE / END_TURN).
+			// Informative only — tool_use is already delivered via toolUseEvent,
+			// and handlers derive stop_reason from collected tool uses. Do not
+			// warn on every turn; it floods logs during agent loops.
 		default:
-			logger.Warnf("[EventStream] Unhandled event type=%q payload=%s", eventType, string(payloadBytes))
+			logger.Debugf("[EventStream] Unhandled event type=%q payload=%s", eventType, string(payloadBytes))
 		}
 	}
 

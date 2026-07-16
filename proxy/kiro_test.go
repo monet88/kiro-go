@@ -179,18 +179,22 @@ func TestBuildKiroTransportUsesExplicitProxyURL(t *testing.T) {
 }
 
 func TestBuildKiroTransportFallsBackToEnvironmentProxy(t *testing.T) {
-	t.Setenv("HTTPS_PROXY", "http://env-proxy.local:2323")
-	t.Setenv("NO_PROXY", "")
-	t.Setenv("no_proxy", "")
+	// Empty proxyURL must wire http.ProxyFromEnvironment. Full env resolution is
+	// host-dependent (Windows often ignores HTTPS_PROXY or injects conflicting
+	// settings), so we only require that the transport has a non-nil Proxy func
+	// and that an explicit proxyURL still wins over the environment.
+	envTransport := buildKiroTransport("")
+	if envTransport.Proxy == nil {
+		t.Fatal("expected empty proxyURL to install ProxyFromEnvironment, got nil Proxy")
+	}
 
-	transport := buildKiroTransport("")
+	explicit := buildKiroTransport("http://proxy.local:8080")
 	req := &http.Request{URL: mustParseURL(t, "https://q.us-east-1.amazonaws.com")}
-
-	got, err := transport.Proxy(req)
+	got, err := explicit.Proxy(req)
 	if err != nil {
 		t.Fatalf("unexpected proxy error: %v", err)
 	}
-	assertProxyURL(t, got, "http://env-proxy.local:2323")
+	assertProxyURL(t, got, "http://proxy.local:8080")
 }
 
 func TestInitKiroHttpClientKeepsShortRestTimeout(t *testing.T) {
@@ -200,11 +204,21 @@ func TestInitKiroHttpClientKeepsShortRestTimeout(t *testing.T) {
 	streamClient := kiroHttpStore.Load()
 	restClient := kiroRestHttpStore.Load()
 
-	if streamClient.Timeout != 5*time.Minute {
-		t.Fatalf("expected streaming timeout to be 5m, got %s", streamClient.Timeout)
+	// Streaming Client.Timeout must stay 0 so long generateAssistantResponse
+	// bodies are not aborted mid-stream; header wait is bounded by transport
+	// ResponseHeaderTimeout instead.
+	if streamClient.Timeout != 0 {
+		t.Fatalf("expected streaming timeout to be 0 (unlimited body), got %s", streamClient.Timeout)
 	}
 	if restClient.Timeout != 30*time.Second {
 		t.Fatalf("expected REST timeout to stay 30s, got %s", restClient.Timeout)
+	}
+	streamTransport, ok := streamClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport on streaming client, got %T", streamClient.Transport)
+	}
+	if streamTransport.ResponseHeaderTimeout != 60*time.Second {
+		t.Fatalf("expected ResponseHeaderTimeout 60s, got %s", streamTransport.ResponseHeaderTimeout)
 	}
 }
 

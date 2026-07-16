@@ -62,6 +62,8 @@ func init() {
 
 // GetClientForProxy returns an http.Client configured for the given proxy URL.
 // If proxyURL is empty, returns the global kiro HTTP client.
+// Per-account streaming clients also use Timeout=0 so long event streams are
+// not cut by a fixed wall clock (see InitKiroHttpClient).
 func GetClientForProxy(proxyURL string) *http.Client {
 	if proxyURL == "" {
 		return kiroHttpStore.Load()
@@ -70,7 +72,7 @@ func GetClientForProxy(proxyURL string) *http.Client {
 		return cached.(*http.Client)
 	}
 	client := &http.Client{
-		Timeout:   5 * time.Minute,
+		Timeout:   0,
 		Transport: buildKiroTransport(proxyURL),
 	}
 	proxyClientCache.Store(proxyURL, client)
@@ -105,13 +107,20 @@ func ResolveAccountProxyURL(account *config.Account) string {
 }
 
 // buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
+// ResponseHeaderTimeout bounds time-to-first-byte only; body streaming is unlimited
+// because generateAssistantResponse event streams can run far longer than a fixed
+// client Timeout (multi-tool agent turns regularly exceed 5 minutes).
 func buildKiroTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
-		ForceAttemptHTTP2:   true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		// Upstream binary event-stream bodies are not compressed; leave the default
+		// Accept-Encoding negotiation in place for management REST calls that share
+		// the same transport builder via InitKiroHttpClient rest client.
+		DisableCompression: false,
+		ForceAttemptHTTP2:  true,
 	}
 	if proxyURL != "" {
 		if u, err := url.Parse(proxyURL); err == nil {
@@ -127,8 +136,12 @@ func buildKiroTransport(proxyURL string) *http.Transport {
 
 // InitKiroHttpClient initializes (or reinitializes) the HTTP clients used for Kiro API requests.
 func InitKiroHttpClient(proxyURL string) {
+	// Streaming client: Timeout must be 0. A non-zero Client.Timeout covers the
+	// entire response body and aborts long generateAssistantResponse streams
+	// mid-flight (observed as unexpected EOF after tens of events). Header wait
+	// is bounded by ResponseHeaderTimeout on the transport instead.
 	client := &http.Client{
-		Timeout:   5 * time.Minute,
+		Timeout:   0,
 		Transport: buildKiroTransport(proxyURL),
 	}
 	kiroHttpStore.Store(client)
@@ -533,6 +546,8 @@ func accountEmailForLog(account *config.Account) string {
 
 // setKiroStreamingRequestHeaders applies the shared generateAssistantResponse
 // header set used by both the primary attempt and the profile-less 403 retry.
+// OAuth/CodeWhisperer paths include x-amzn-kiro-agent-mode: vibe; the API-key
+// kiro.dev path deliberately omits it (parity with the working fork).
 func setKiroStreamingRequestHeaders(req *http.Request, account *config.Account, amzTarget, epURL string) {
 	if req == nil {
 		return
@@ -562,6 +577,31 @@ func setKiroStreamingRequestHeaders(req *http.Request, account *config.Account, 
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 }
 
+// setKiroDevAPIKeyStreamingHeaders applies the leaner header set used by static
+// ksk_… generateAssistantResponse calls against runtime.{region}.kiro.dev.
+// Matches the working fork: base auth headers + SDK attempt headers, without
+// x-amzn-kiro-agent-mode (that header is for OAuth IDE endpoints only).
+func setKiroDevAPIKeyStreamingHeaders(req *http.Request, account *config.Account, epURL string) {
+	if req == nil {
+		return
+	}
+	host := ""
+	if parsedURL, parseErr := url.Parse(epURL); parseErr == nil {
+		host = parsedURL.Host
+	} else if req.URL != nil {
+		host = req.URL.Host
+	}
+	headerValues := buildStreamingHeaderValues(account, host)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "*/*")
+	applyKiroBaseHeaders(req, account, headerValues)
+	if bearer := apiKeyBearer(account); bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
+	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
+}
+
 // callKiroAPIViaKiroDev streams generateAssistantResponse against
 // runtime.{region}.kiro.dev for static Kiro API Keys (ksk_…).
 func callKiroAPIViaKiroDev(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
@@ -584,7 +624,7 @@ func callKiroAPIViaKiroDev(ctx context.Context, account *config.Account, payload
 	if err != nil {
 		return err
 	}
-	setKiroStreamingRequestHeaders(req, account, "", epURL)
+	setKiroDevAPIKeyStreamingHeaders(req, account, epURL)
 
 	resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
 	if err != nil {

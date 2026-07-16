@@ -230,6 +230,9 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Disable reverse-proxy response buffering (nginx/Caddy-compatible) so each
+	// SSE chunk reaches the client immediately instead of waiting for a buffer fill.
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

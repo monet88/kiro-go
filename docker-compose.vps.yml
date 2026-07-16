@@ -11,9 +11,19 @@
 #   cp .env.vps.example .env        # optional: override ADMIN_PASSWORD etc.
 #   docker compose -f docker-compose.vps.yml up -d
 #
-# Then add a vhost to the host Caddyfile (/etc/caddy/Caddyfile):
+# Then add a vhost to the host Caddyfile (/etc/caddy/Caddyfile).
+# flush_interval -1 is required so SSE / streaming chat chunks are not buffered
+# by reverse_proxy (without it clients feel multi-second "typing" lag):
 #   kiro-go.monet.uno {
-#       reverse_proxy localhost:8090
+#       # Direct web Enterprise SSO support (optional).
+#       @sso path /sso-callback /sso-callback/*
+#       handle @sso {
+#               uri strip_prefix /sso-callback
+#               reverse_proxy 127.0.0.1:3128
+#       }
+#       reverse_proxy 127.0.0.1:8090 {
+#               flush_interval -1
+#       }
 #   }
 # and reload with: sudo systemctl reload caddy
 services:
