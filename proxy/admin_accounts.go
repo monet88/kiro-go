@@ -175,6 +175,18 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	// Static ksk_ keys are regional on management/runtime.kiro.dev. Probe the
+	// given region first, then common regions, so a wrong default (us-east-1)
+	// still lands on the serving region (often eu-central-1). Soft on failure:
+	// persist with the operator-supplied region so offline/dev keys still add.
+	if account.IsApiKeyCredential() {
+		if info, region, err := probeApiKeyServingRegion(&account); err == nil {
+			applyApiKeyProbeResult(&account, info, region)
+			logger.Infof("[Admin] API-key Account validated in region %s email=%s", region, account.Email)
+		} else {
+			logger.Warnf("[Admin] API-key Account region probe failed (saving with region=%s): %v", account.Region, err)
+		}
+	}
 
 	if err := config.AddAccount(account); err != nil {
 		logger.Warnf("[Admin] add account failed: %v", err)

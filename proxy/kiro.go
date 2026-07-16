@@ -382,6 +382,13 @@ func CallKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayl
 		callback = &wrapped
 	}
 
+	// API-key Accounts use runtime.{region}.kiro.dev with TokenType: API_KEY.
+	// AWS CodeWhisperer/Q hosts reject ksk_ bearers (403 invalid token /
+	// subscription does not support this application). No profile ARN is used.
+	if account != nil && account.IsApiKeyCredential() {
+		return callKiroAPIViaKiroDev(ctx, account, payload, callback)
+	}
+
 	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" {
 		if profileArn, err := ResolveProfileArn(account); err == nil {
 			payload.ProfileArn = profileArn
@@ -543,10 +550,65 @@ func setKiroStreamingRequestHeaders(req *http.Request, account *config.Account, 
 		req.Header.Set("X-Amz-Target", amzTarget)
 	}
 	applyKiroBaseHeaders(req, account, headerValues)
+	// Prefer KiroApiKey as the bearer for API-key Accounts when dual-write is stale.
+	if account != nil && account.IsApiKeyCredential() {
+		if bearer := apiKeyBearer(account); bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+	}
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 	req.Header.Set("x-amzn-codewhisperer-optout", "true")
 	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
+}
+
+// callKiroAPIViaKiroDev streams generateAssistantResponse against
+// runtime.{region}.kiro.dev for static Kiro API Keys (ksk_…).
+func callKiroAPIViaKiroDev(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if payload == nil {
+		return fmt.Errorf("payload is nil")
+	}
+	// API-key Accounts have no profile ARN; clear any stale OAuth value.
+	payload.ProfileArn = ""
+	payload.ConversationState.CurrentMessage.UserInputMessage.Origin = "AI_EDITOR"
+
+	epURL := kiroDevRuntimeGenerateURL(account)
+	reqBody, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", epURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	setKiroStreamingRequestHeaders(req, account, "", epURL)
+
+	resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	if err != nil {
+		if !isClientDisconnectError(ctx, err) {
+			recordUpstreamErrorProbe("Kiro Runtime", "connect", 0, currentMessageModelID(payload), account, err.Error())
+		}
+		return err
+	}
+	if resp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		body := strings.TrimSpace(string(errBody))
+		recordUpstreamErrorProbe("Kiro Runtime", "response", resp.StatusCode, currentMessageModelID(payload), account, body)
+		if resp.StatusCode == 429 {
+			_ = recordKiro429ProbeLog("Kiro Runtime", account, body)
+		}
+		return &KiroAPIError{StatusCode: resp.StatusCode, Endpoint: "Kiro Runtime", Body: body}
+	}
+	err = parseEventStream(ctx, resp.Body, callback)
+	resp.Body.Close()
+	if err != nil && !isClientDisconnectError(ctx, err) {
+		recordUpstreamErrorProbe("Kiro Runtime", "stream", 200, currentMessageModelID(payload), account, err.Error())
+	}
+	return err
 }
 
 // ==================== Event Stream Parsing ====================

@@ -59,16 +59,8 @@ func NormalizeApiKeyCredential(a *Account) {
 	a.OverageRate = 0
 	a.CurrentOverages = 0
 	a.OverageCheckedAt = 0
-	a.UsageCurrent = 0
-	a.UsageLimit = 0
-	a.UsagePercent = 0
-	a.NextResetDate = ""
-	a.LastRefresh = 0
-	a.TrialUsageCurrent = 0
-	a.TrialUsageLimit = 0
-	a.TrialUsagePercent = 0
-	a.TrialStatus = ""
-	a.TrialExpiresAt = 0
+	// Usage/subscription fields are kept: API-key Accounts refresh them via
+	// management.{region}.kiro.dev (same source as OAuth getUsageLimits).
 }
 
 func ValidateApiKeyCredential(account Account) error {

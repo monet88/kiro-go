@@ -105,8 +105,10 @@ func TestNormalizeApiKeyCredentialDualWrite(t *testing.T) {
 		if a.OverageStatus != "" || a.OverageCapability != "" || a.OverageCap != 0 || a.OverageRate != 0 || a.CurrentOverages != 0 || a.OverageCheckedAt != 0 {
 			t.Fatalf("overage metadata was not scrubbed: %+v", a)
 		}
-		if a.UsageCurrent != 0 || a.UsageLimit != 0 || a.UsagePercent != 0 || a.NextResetDate != "" || a.LastRefresh != 0 || a.TrialUsageCurrent != 0 || a.TrialUsageLimit != 0 || a.TrialUsagePercent != 0 || a.TrialStatus != "" || a.TrialExpiresAt != 0 {
-			t.Fatalf("usage metadata was not scrubbed: %+v", a)
+		// Usage/subscription metadata is retained so management.kiro.dev refresh can
+		// persist limits for API-key Accounts.
+		if a.UsageCurrent != 75 || a.UsageLimit != 100 || a.LastRefresh != 789 {
+			t.Fatalf("usage metadata should be preserved for API-key Accounts: %+v", a)
 		}
 	})
 

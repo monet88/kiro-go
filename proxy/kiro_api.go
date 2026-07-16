@@ -46,12 +46,46 @@ func kiroRegionForProfile(account *config.Account, profileArn string) string {
 		if r := regionFromProfileArn(account.ProfileArn); r != "" {
 			return r
 		}
+		// API-key Accounts (ksk_…) are bound to a Kiro runtime/management region
+		// chosen at add time (e.g. eu-central-1). That region is the data-plane
+		// for runtime.{region}.kiro.dev / management.{region}.kiro.dev — not an
+		// OIDC portal region — so honour account.Region here.
+		if account.IsApiKeyCredential() {
+			if r := strings.TrimSpace(account.Region); r != "" {
+				return r
+			}
+		}
 		// account.Region is the OIDC/SSO auth (portal) region, not the Amazon Q
 		// data-plane region. IDC Start URLs often land in portal-only regions
 		// such as eu-north-1 where q.{region}.amazonaws.com does not exist.
 		// Without a profile ARN, always use the default Q data-plane region.
 	}
 	return "us-east-1"
+}
+
+// kiroDevManagementBase is the management plane host for static Kiro API Keys
+// (ksk_…). OAuth Accounts must not use this host.
+func kiroDevManagementBase(account *config.Account) string {
+	return "https://management." + kiroRegion(account) + ".kiro.dev"
+}
+
+// kiroDevRuntimeGenerateURL is the generateAssistantResponse endpoint for
+// static Kiro API Keys. AWS CodeWhisperer/Q hosts reject ksk_ bearers (403
+// invalid token / subscription does not support this application).
+func kiroDevRuntimeGenerateURL(account *config.Account) string {
+	return "https://runtime." + kiroRegion(account) + ".kiro.dev/generateAssistantResponse"
+}
+
+// apiKeyBearer returns the static ksk_… secret for an API-key Account.
+// KiroApiKey is the source of truth (ADR-0002); AccessToken is the dual-write.
+func apiKeyBearer(account *config.Account) string {
+	if account == nil {
+		return ""
+	}
+	if k := strings.TrimSpace(account.KiroApiKey); k != "" {
+		return k
+	}
+	return strings.TrimSpace(account.AccessToken)
 }
 
 // regionalizeURL points a hardcoded us-east-1 Kiro endpoint at the profile's
@@ -214,6 +248,9 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 
 // ListAvailableModels 获取可用模型列表
 func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
+	if account != nil && account.IsApiKeyCredential() {
+		return listAvailableModelsViaKiroDev(account)
+	}
 	if err := ensureRestProfileArn(account); err != nil {
 		return nil, fmt.Errorf("resolve profileArn: %w", err)
 	}
@@ -245,6 +282,38 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	}
 	defer resp.Body.Close()
 
+	var result struct {
+		Models []ModelInfo `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Models, nil
+}
+
+// listAvailableModelsViaKiroDev lists models for static Kiro API Keys via
+// management.{region}.kiro.dev (CodeWhisperer/Q reject ksk_ tokens).
+func listAvailableModelsViaKiroDev(account *config.Account) ([]ModelInfo, error) {
+	url := kiroDevManagementBase(account) + "/ListAvailableModels?origin=AI_EDITOR&maxResults=50"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	setKiroHeaders(req, account)
+	// Prefer the dual-written API key bearer explicitly.
+	if bearer := apiKeyBearer(account); bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+
+	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
 	var result struct {
 		Models []ModelInfo `json:"models"`
 	}
@@ -574,15 +643,10 @@ func setKiroHeaders(req *http.Request, account *config.Account) {
 
 // RefreshAccountInfo 刷新账户信息（使用量、订阅等）
 func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
-	info := &config.AccountInfo{}
-	if account.IsApiKeyCredential() {
-		info.Email = account.Email
-		info.UserId = account.UserId
-		info.SubscriptionType = account.SubscriptionType
-		info.SubscriptionTitle = account.SubscriptionTitle
-		info.DaysRemaining = account.DaysRemaining
-		return info, nil
+	if account != nil && account.IsApiKeyCredential() {
+		return refreshAccountInfoViaKiroDev(account)
 	}
+	info := &config.AccountInfo{}
 	info.LastRefresh = time.Now().Unix()
 
 	// 获取使用量和订阅信息
@@ -728,6 +792,209 @@ func parseSubscriptionType(raw string) string {
 		return "PRO"
 	}
 	return "FREE"
+}
+
+// apiKeyRegionProbeOrder is the management/runtime region order used when an
+// API-key Account's region is unknown or rejected. The caller's region (if any)
+// is always tried first by probeApiKeyServingRegion.
+var apiKeyRegionProbeOrder = []string{
+	"us-east-1",
+	"eu-central-1",
+	"ap-northeast-1",
+	"eu-west-1",
+	"ap-southeast-1",
+}
+
+// fetchUsageLimitsViaKiroDev is a side-effect free getUsageLimits against
+// management.{region}.kiro.dev for a static ksk_ key.
+func fetchUsageLimitsViaKiroDev(account *config.Account) (*config.AccountInfo, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+	bearer := apiKeyBearer(account)
+	if bearer == "" {
+		return nil, fmt.Errorf("Kiro API Key is required for API-key Accounts")
+	}
+	url := kiroDevManagementBase(account) + "/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("TokenType", "API_KEY")
+
+	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var usage UsageLimitsResponse
+	if err := json.Unmarshal(body, &usage); err != nil {
+		return nil, err
+	}
+
+	info := &config.AccountInfo{LastRefresh: time.Now().Unix()}
+	if usage.UserInfo != nil {
+		info.Email = usage.UserInfo.Email
+		info.UserId = usage.UserInfo.UserId
+	}
+	if info.Email == "" {
+		info.Email = account.Email
+	}
+	if info.UserId == "" {
+		info.UserId = account.UserId
+	}
+	if usage.SubscriptionInfo != nil {
+		titleOrName := usage.SubscriptionInfo.SubscriptionTitle
+		if titleOrName == "" {
+			titleOrName = usage.SubscriptionInfo.SubscriptionName
+		}
+		if titleOrName == "" {
+			titleOrName = usage.SubscriptionInfo.SubscriptionType
+		}
+		info.SubscriptionType = parseSubscriptionType(titleOrName)
+		info.SubscriptionTitle = usage.SubscriptionInfo.SubscriptionTitle
+		if info.SubscriptionTitle == "" {
+			info.SubscriptionTitle = usage.SubscriptionInfo.SubscriptionName
+		}
+	}
+	if len(usage.UsageBreakdownList) > 0 {
+		b := usage.UsageBreakdownList[0]
+		info.UsageCurrent = b.CurrentUsage
+		info.UsageLimit = b.UsageLimit
+		if info.UsageLimit > 0 {
+			info.UsagePercent = info.UsageCurrent / info.UsageLimit
+		}
+	}
+	if usage.NextDateReset != "" {
+		if ts, err := usage.NextDateReset.Int64(); err == nil && ts > 0 {
+			info.NextResetDate = time.Unix(ts, 0).Format("2006-01-02")
+		} else if f, err := usage.NextDateReset.Float64(); err == nil && f > 0 {
+			info.NextResetDate = time.Unix(int64(f), 0).Format("2006-01-02")
+		}
+	}
+	return info, nil
+}
+
+// probeApiKeyServingRegion tries the account's region first, then common Kiro
+// management regions, and returns the first region that accepts the ksk_ key.
+// It never mutates config or disables accounts (safe for pre-add validation).
+func probeApiKeyServingRegion(account *config.Account) (*config.AccountInfo, string, error) {
+	if account == nil {
+		return nil, "", fmt.Errorf("account is nil")
+	}
+	given := strings.TrimSpace(account.Region)
+	tryRegions := make([]string, 0, len(apiKeyRegionProbeOrder)+1)
+	if given != "" {
+		tryRegions = append(tryRegions, given)
+	}
+	for _, rg := range apiKeyRegionProbeOrder {
+		if rg != given {
+			tryRegions = append(tryRegions, rg)
+		}
+	}
+	var lastErr error
+	for _, rg := range tryRegions {
+		probe := &config.Account{
+			KiroApiKey:  apiKeyBearer(account),
+			AccessToken: apiKeyBearer(account),
+			AuthMethod:  "api_key",
+			Region:      rg,
+			Email:       account.Email,
+			UserId:      account.UserId,
+			ProxyURL:    account.ProxyURL,
+		}
+		info, err := fetchUsageLimitsViaKiroDev(probe)
+		if err == nil && info != nil {
+			return info, rg, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("API key rejected in all probed regions")
+	}
+	return nil, "", lastErr
+}
+
+// refreshAccountInfoViaKiroDev fetches usage/subscription info for API-key
+// Accounts via management.{region}.kiro.dev. Doubles as live validation: HTTP 200
+// means the ksk_ key is accepted in that region. On 401/403 it re-probes other
+// common regions before disabling a persisted account (wrong default region is
+// common when the UI seeds us-east-1).
+func refreshAccountInfoViaKiroDev(account *config.Account) (*config.AccountInfo, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+	info, err := fetchUsageLimitsViaKiroDev(account)
+	if err == nil {
+		return info, nil
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "TEMPORARILY_SUSPENDED") || strings.Contains(errMsg, "temporarily is suspended") {
+		if strings.TrimSpace(account.ID) != "" {
+			updated := *account
+			updated.Enabled = false
+			updated.BanStatus = "BANNED"
+			updated.BanReason = "AWS temporarily suspended - unusual user activity detected"
+			updated.BanTime = time.Now().Unix()
+			_ = config.UpdateAccount(account.ID, updated)
+		}
+		return nil, fmt.Errorf("Account suspended: %w", err)
+	}
+	// Wrong region often surfaces as HTTP 403 Invalid token. Probe siblings
+	// before treating the key as permanently dead.
+	if strings.Contains(errMsg, "HTTP 401") || strings.Contains(errMsg, "HTTP 403") {
+		if probed, region, probeErr := probeApiKeyServingRegion(account); probeErr == nil && probed != nil {
+			applyApiKeyProbeResult(account, probed, region)
+			if strings.TrimSpace(account.ID) != "" {
+				// Persist the corrected region so the next chat/generate hits the
+				// right runtime host without re-probing.
+				updated := *account
+				_ = config.UpdateAccount(account.ID, updated)
+			}
+			return probed, nil
+		}
+		if strings.TrimSpace(account.ID) != "" {
+			updated := *account
+			updated.Enabled = false
+			updated.BanStatus = "DISABLED"
+			updated.BanReason = "Authentication failed - token invalid or expired"
+			updated.BanTime = time.Now().Unix()
+			_ = config.UpdateAccount(account.ID, updated)
+		}
+	}
+	return nil, err
+}
+
+// applyApiKeyProbeResult writes email/subscription/usage/region discovered by
+// a successful management.kiro.dev probe onto the local account copy.
+func applyApiKeyProbeResult(account *config.Account, info *config.AccountInfo, region string) {
+	if account == nil || info == nil {
+		return
+	}
+	if region = strings.TrimSpace(region); region != "" {
+		account.Region = region
+	}
+	if info.Email != "" {
+		account.Email = info.Email
+	}
+	if info.UserId != "" {
+		account.UserId = info.UserId
+	}
+	account.SubscriptionType = info.SubscriptionType
+	account.SubscriptionTitle = info.SubscriptionTitle
+	account.UsageCurrent = info.UsageCurrent
+	account.UsageLimit = info.UsageLimit
+	account.UsagePercent = info.UsagePercent
+	account.NextResetDate = info.NextResetDate
+	account.LastRefresh = info.LastRefresh
 }
 
 // 响应结构体

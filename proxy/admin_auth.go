@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"kiro-go/auth"
 	"kiro-go/config"
+	"kiro-go/logger"
 	"net/http"
 	"strings"
 	"time"
@@ -462,6 +463,12 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			Enabled:     true,
 			MachineId:   config.GenerateMachineId(),
 		}
+		// Auto-detect the management/runtime region that accepts this ksk_ key.
+		if info, region, err := probeApiKeyServingRegion(&account); err == nil {
+			applyApiKeyProbeResult(&account, info, region)
+		} else {
+			logger.Warnf("[Import] API-key Account region probe failed (importing with region=%s): %v", account.Region, err)
+		}
 		if err := config.AddAccount(account); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -471,8 +478,9 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"account": map[string]interface{}{
-				"id":    account.ID,
-				"email": account.Email,
+				"id":     account.ID,
+				"email":  account.Email,
+				"region": account.Region,
 			},
 		})
 		return
