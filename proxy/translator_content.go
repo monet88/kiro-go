@@ -146,29 +146,44 @@ func parseBase64Image(data, format string) *KiroImage {
 	}
 }
 
-// extractThinkingFromContent 从内容中提取 <thinking> 标签内的内容
+// extractThinkingFromContent separates real <thinking>...</thinking> reasoning
+// blocks from the plain assistant text. It uses the same quote/fence/blockquote
+// aware tag detection as the streaming thinkingSplitter, so a literal
+// `<thinking>` inside inline code, a code fence, quotes, or a Markdown
+// blockquote is left in the output instead of being mistaken for a reasoning
+// boundary (the naive strings.Index approach would strip the rest as thinking).
 func extractThinkingFromContent(content string) (string, string) {
-	var reasoning string
-	result := content
-
-	for {
-		start := strings.Index(result, "<thinking>")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(result[start:], "</thinking>")
-		if end == -1 {
-			break
-		}
-		end += start
-
-		// 提取 thinking 内容
-		thinkingContent := result[start+10 : end]
-		reasoning += thinkingContent
-
-		// 从结果中移除 thinking 标签
-		result = result[:start] + result[end+11:]
+	if findRealThinkingStartTag(content, 0) == -1 {
+		return strings.TrimSpace(content), ""
 	}
 
-	return strings.TrimSpace(result), reasoning
+	var out strings.Builder
+	var reasoning strings.Builder
+	pos := 0
+	for pos < len(content) {
+		start := findRealThinkingStartTag(content, pos)
+		if start == -1 {
+			out.WriteString(content[pos:])
+			break
+		}
+		if start > pos {
+			out.WriteString(content[pos:start])
+		}
+		end := findRealThinkingEndTag(content, start+len(thinkingStartTag))
+		if end == -1 {
+			// Unterminated real start tag: keep the remainder as plain text so
+			// no output is silently dropped.
+			out.WriteString(content[start:])
+			break
+		}
+		reasoning.WriteString(content[start+len(thinkingStartTag) : end])
+		pos = end + len(thinkingEndTag)
+		// A real thinking block is followed by "\n\n"; consume it so it does not
+		// leak into the plain text.
+		if strings.HasPrefix(content[pos:], "\n\n") {
+			pos += len("\n\n")
+		}
+	}
+
+	return strings.TrimSpace(out.String()), reasoning.String()
 }

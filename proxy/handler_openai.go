@@ -136,8 +136,6 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	var rawContentBuilder strings.Builder
 	var rawReasoningBuilder strings.Builder
 	var firstTokenAt time.Time
-	var textBuffer string
-	var inThinkingBlock bool
 	var dropTagThinking bool
 	var thinkingSource thinkingStreamSource
 	var thinkingStarted bool
@@ -155,8 +153,6 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		rawContentBuilder.Reset()
 		rawReasoningBuilder.Reset()
 		firstTokenAt = time.Time{}
-		textBuffer = ""
-		inThinkingBlock = false
 		dropTagThinking = false
 		thinkingSource = thinkingSourceUnknown
 		thinkingStarted = false
@@ -260,6 +256,37 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 			responseStarted = true
 		}
 
+		splitter := &thinkingSplitter{
+			onPlain: func(t string) { sendChunk(t, 0) },
+			onOpen: func() {
+				dropTagThinking = !allowTagSource(&thinkingSource)
+				thinkingStarted = false
+			},
+			onThinking: func(t string) {
+				if dropTagThinking {
+					return
+				}
+				if !thinkingStarted {
+					sendChunk(t, 1)
+					thinkingStarted = true
+				} else {
+					sendChunk(t, 2)
+				}
+			},
+			onClose: func() {
+				wasDrop := dropTagThinking
+				dropTagThinking = false
+				if wasDrop {
+					return
+				}
+				if !thinkingStarted {
+					sendChunk("", 1)
+				}
+				sendChunk("", 3)
+				thinkingStarted = false
+			},
+		}
+
 		processText := func(text string, isThinking bool, forceFlush bool) {
 			if isThinking && !thinking {
 				return
@@ -285,84 +312,9 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				thinkingStarted = false
 			}
 
-			textBuffer += text
-
-			for {
-				if !inThinkingBlock {
-					thinkingStart := strings.Index(textBuffer, "<thinking>")
-					if thinkingStart != -1 {
-						if thinkingStart > 0 {
-							sendChunk(textBuffer[:thinkingStart], 0)
-						}
-						textBuffer = textBuffer[thinkingStart+10:]
-						inThinkingBlock = true
-						dropTagThinking = !allowTagSource(&thinkingSource)
-						thinkingStarted = false
-					} else if forceFlush || len([]rune(textBuffer)) > 50 {
-						runes := []rune(textBuffer)
-						safeLen := len(runes)
-						if !forceFlush {
-							safeLen = max(0, len(runes)-15)
-						}
-						if safeLen > 0 {
-							sendChunk(string(runes[:safeLen]), 0)
-							textBuffer = string(runes[safeLen:])
-						}
-						break
-					} else {
-						break
-					}
-				} else {
-					thinkingEnd := strings.Index(textBuffer, "</thinking>")
-					if thinkingEnd != -1 {
-						content := textBuffer[:thinkingEnd]
-						if !dropTagThinking {
-							if !thinkingStarted {
-								sendChunk(content, 1)
-								sendChunk("", 3)
-							} else {
-								sendChunk(content, 3)
-							}
-						}
-						textBuffer = textBuffer[thinkingEnd+11:]
-						inThinkingBlock = false
-						dropTagThinking = false
-						thinkingStarted = false
-					} else if forceFlush {
-						if textBuffer != "" {
-							if !dropTagThinking {
-								if !thinkingStarted {
-									sendChunk(textBuffer, 1)
-									sendChunk("", 3)
-								} else {
-									sendChunk(textBuffer, 3)
-								}
-							}
-							textBuffer = ""
-						}
-						inThinkingBlock = false
-						dropTagThinking = false
-						thinkingStarted = false
-						break
-					} else {
-						runes := []rune(textBuffer)
-						if len(runes) > 20 {
-							safeLen := len(runes) - 15
-							if safeLen > 0 {
-								if !dropTagThinking {
-									if !thinkingStarted {
-										sendChunk(string(runes[:safeLen]), 1)
-										thinkingStarted = true
-									} else {
-										sendChunk(string(runes[:safeLen]), 2)
-									}
-								}
-								textBuffer = string(runes[safeLen:])
-							}
-						}
-						break
-					}
-				}
+			splitter.push(text)
+			if forceFlush {
+				splitter.flush()
 			}
 		}
 
