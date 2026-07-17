@@ -49,7 +49,9 @@ func (e *kiroSemanticExtractor) ingestJSONPayload(eventType string, payloadBytes
 	prevIn, prevOut := e.inputTokens, e.outputTokens
 	e.inputTokens, e.outputTokens = updateTokensFromEvent(event, e.inputTokens, e.outputTokens)
 	if e.inputTokens != prevIn || e.outputTokens != prevOut {
-		out = append(out, newUsageSnapshot(e.inputTokens, e.outputTokens))
+		if ev, err := newUsageSnapshot(e.inputTokens, e.outputTokens); err == nil {
+			out = append(out, ev)
+		}
 	}
 
 	switch eventType {
@@ -91,15 +93,22 @@ func (e *kiroSemanticExtractor) ingestJSONPayload(eventType string, payloadBytes
 		}
 	case "contextUsageEvent":
 		if pct, ok := event["contextUsagePercentage"].(float64); ok {
-			out = append(out, newContextUsageSnapshot(pct))
+			if ev, err := newContextUsageSnapshot(pct); err == nil {
+				out = append(out, ev)
+			}
 		}
 	case "metadataEvent":
 		// Informative stop metadata. PR A compatibility adapter does not surface
 		// this on callbacks; PR B will consume it for stop-reason reconciliation.
-		reason := firstStringField(event, "stopReason", "stop_reason")
-		out = append(out, newStopMetadata(reason))
+		if reason := firstStringField(event, "stopReason", "stop_reason"); reason != "" {
+			if ev, err := newStopMetadata(reason); err == nil {
+				out = append(out, ev)
+			}
+		}
 	default:
-		logger.Debugf("[EventStream] Unhandled event type=%q payload=%s", eventType, string(payloadBytes))
+		// Never log the raw payload: it can carry conversation text or tool
+		// arguments. The type plus byte length is enough to diagnose gaps.
+		logger.Debugf("[EventStream] Unhandled event type=%q payloadBytes=%d", eventType, len(payloadBytes))
 	}
 	return out
 }
@@ -152,13 +161,13 @@ func (e *kiroSemanticExtractor) ingestToolUseEvent(event map[string]interface{})
 
 	// Input fragments. Object-shaped input replaces the buffer (same as today).
 	if input, ok := event["input"].(string); ok && input != "" {
-		if ev, err := newToolInput(e.openTool.toolUseID, e.openTool.name, input, false); err == nil {
+		if ev, err := newToolInput(e.openTool.toolUseID, e.openTool.name, input, toolInputAppend); err == nil {
 			out = append(out, ev)
 		}
 	} else if inputObj, ok := event["input"].(map[string]interface{}); ok {
 		data, _ := json.Marshal(inputObj)
 		if len(data) > 0 {
-			if ev, err := newToolInput(e.openTool.toolUseID, e.openTool.name, string(data), true); err == nil {
+			if ev, err := newToolInput(e.openTool.toolUseID, e.openTool.name, string(data), toolInputReplace); err == nil {
 				out = append(out, ev)
 			}
 		}
@@ -209,13 +218,13 @@ func (e *kiroSemanticExtractor) ingestCompleteToolUse(event map[string]interface
 		out = append(out, ev)
 	}
 	if input, ok := event["input"].(string); ok && input != "" {
-		if ev, err := newToolInput(toolUseID, name, input, false); err == nil {
+		if ev, err := newToolInput(toolUseID, name, input, toolInputAppend); err == nil {
 			out = append(out, ev)
 		}
 	} else if inputObj, ok := event["input"].(map[string]interface{}); ok {
 		data, _ := json.Marshal(inputObj)
 		if len(data) > 0 {
-			if ev, err := newToolInput(toolUseID, name, string(data), true); err == nil {
+			if ev, err := newToolInput(toolUseID, name, string(data), toolInputReplace); err == nil {
 				out = append(out, ev)
 			}
 		}

@@ -45,32 +45,13 @@ func (a *kiroCallbackAdapter) handle(ev kiroSemanticEvent) {
 	case kiroKindToolStart:
 		a.tool = &adapterToolState{toolUseID: ev.toolID, name: ev.toolName}
 	case kiroKindToolInput:
-		if a.tool == nil {
-			a.tool = &adapterToolState{toolUseID: ev.toolID, name: ev.toolName}
-		} else {
-			// Real ID may upgrade a generated one between start and stop.
-			if ev.toolID != "" {
-				a.tool.toolUseID = ev.toolID
-			}
-			if ev.toolName != "" {
-				a.tool.name = ev.toolName
-			}
-		}
-		if ev.replace {
+		a.syncToolIdentity(ev)
+		if ev.inputMode == toolInputReplace {
 			a.tool.inputBuffer.Reset()
 		}
 		a.tool.inputBuffer.WriteString(ev.toolInput)
 	case kiroKindToolStop:
-		if a.tool == nil {
-			a.tool = &adapterToolState{toolUseID: ev.toolID, name: ev.toolName}
-		} else {
-			if ev.toolID != "" {
-				a.tool.toolUseID = ev.toolID
-			}
-			if ev.toolName != "" {
-				a.tool.name = ev.toolName
-			}
-		}
+		a.syncToolIdentity(ev)
 		a.finishTool()
 	case kiroKindUsage:
 		a.inputTokens = ev.inputTokens
@@ -98,6 +79,22 @@ func (a *kiroCallbackAdapter) handle(ev kiroSemanticEvent) {
 		if a.callback.OnComplete != nil {
 			a.callback.OnComplete(a.inputTokens, a.outputTokens)
 		}
+	}
+}
+
+// syncToolIdentity opens tool state if needed and applies any non-empty
+// identity from the event. A real ID may upgrade a generated one between
+// start and stop.
+func (a *kiroCallbackAdapter) syncToolIdentity(ev kiroSemanticEvent) {
+	if a.tool == nil {
+		a.tool = &adapterToolState{toolUseID: ev.toolID, name: ev.toolName}
+		return
+	}
+	if ev.toolID != "" {
+		a.tool.toolUseID = ev.toolID
+	}
+	if ev.toolName != "" {
+		a.tool.name = ev.toolName
 	}
 }
 

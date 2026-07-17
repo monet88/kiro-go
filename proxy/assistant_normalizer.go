@@ -143,7 +143,7 @@ func (n *assistantNormalizer) handle(ev kiroSemanticEvent) []assistantEvent {
 	case kiroKindToolStart:
 		n.onToolStart(ev.toolID, ev.toolName)
 	case kiroKindToolInput:
-		n.onToolInput(ev.toolID, ev.toolName, ev.toolInput, ev.replace)
+		n.onToolInput(ev.toolID, ev.toolName, ev.toolInput, ev.inputMode == toolInputReplace)
 	case kiroKindToolStop:
 		n.onToolStop(ev.toolID, ev.toolName)
 	case kiroKindUsage:
@@ -170,7 +170,7 @@ func (n *assistantNormalizer) handle(ev kiroSemanticEvent) []assistantEvent {
 		}
 	case kiroKindError:
 		if ev.err != nil {
-			n.fail(ev.err)
+			n.failStreamError(ev.errClass, ev.err)
 		}
 	case kiroKindTerminal:
 		n.onTerminal()
@@ -586,6 +586,26 @@ func (n *assistantNormalizer) fail(err error) {
 	n.failed = true
 	n.failErr = err
 	n.out = append(n.out, assistantEvent{kind: assistantKindModelOutputError, err: err})
+}
+
+// failStreamError routes a typed semantic stream error. Model-output faults are
+// caller-terminal, non-penalizing Assistant Events (same as locally detected
+// defects). Upstream/service faults propagate raw so callers can retry or fail
+// over; they are surfaced as the normalizer's terminal error without being
+// tagged as a Model Output Error.
+func (n *assistantNormalizer) failStreamError(class kiroErrorClass, err error) {
+	if class == kiroErrorModelOutput {
+		if _, ok := err.(*modelOutputError); !ok {
+			err = newModelOutputError("upstream_model_output_error", "upstream reported a model-output error")
+		}
+		n.fail(err)
+		return
+	}
+	if n.failed {
+		return
+	}
+	n.failed = true
+	n.failErr = err
 }
 
 func toolFingerprint(canonicalName string, input map[string]interface{}) string {

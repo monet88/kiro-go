@@ -257,7 +257,7 @@ func TestCrossProtocolNormalizedToolCallEquivalence(t *testing.T) {
 	}
 	start, _ := newToolStart("toolu_1", "lookup")
 	feed(start)
-	in, _ := newToolInput("toolu_1", "lookup", `{"q":"ok"}`, false)
+	in, _ := newToolInput("toolu_1", "lookup", `{"q":"ok"}`, toolInputAppend)
 	feed(in)
 	stop, _ := newToolStop("toolu_1", "lookup")
 	feed(stop)

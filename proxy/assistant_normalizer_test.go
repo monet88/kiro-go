@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -117,6 +118,54 @@ func TestNormalizerMaxTokensOutranks(t *testing.T) {
 	ks := kindsOf(out)
 	if ks[len(ks)-1] != "complete:max_tokens:0:0" {
 		t.Fatalf("got %v", ks)
+	}
+}
+
+func TestNormalizerModelOutputStreamErrorFailsCallerTerminal(t *testing.T) {
+	n := newAssistantNormalizer(nil)
+	ev, err := newStreamError(kiroErrorModelOutput, errors.New("bad model output"))
+	if err != nil {
+		t.Fatalf("newStreamError: %v", err)
+	}
+	out := collect(n, mustPlain("partial"), ev, newTerminalBoundary())
+	ks := kindsOf(out)
+	joined := strings.Join(ks, "|")
+	if !strings.Contains(joined, "error:") {
+		t.Fatalf("expected a model-output error event, got %v", ks)
+	}
+	// A model-output stream error must surface as a Model Output Error so callers
+	// render a terminal error without Account penalty/failover.
+	if !IsModelOutputError(n.failErr) {
+		t.Fatalf("expected model-output error, got %v", n.failErr)
+	}
+	// Terminal after failure must not emit a completion event.
+	if strings.Contains(joined, "complete:") {
+		t.Fatalf("failed stream must not complete: %v", ks)
+	}
+}
+
+func TestNormalizerUpstreamStreamErrorHaltsWithoutModelOutputError(t *testing.T) {
+	n := newAssistantNormalizer(nil)
+	ev, err := newStreamError(kiroErrorUpstream, errors.New("upstream fault"))
+	if err != nil {
+		t.Fatalf("newStreamError: %v", err)
+	}
+	out := collect(n, mustPlain("partial"), ev, newTerminalBoundary())
+	ks := kindsOf(out)
+	joined := strings.Join(ks, "|")
+	// Upstream faults propagate raw so callers can retry/fail over; they are not
+	// tagged as Model Output Errors and do not complete the stream.
+	if strings.Contains(joined, "error:") {
+		t.Fatalf("upstream error must not emit a model-output error event: %v", ks)
+	}
+	if strings.Contains(joined, "complete:") {
+		t.Fatalf("upstream error must not complete the stream: %v", ks)
+	}
+	if n.failErr == nil {
+		t.Fatal("expected upstream error to be recorded as failErr")
+	}
+	if IsModelOutputError(n.failErr) {
+		t.Fatalf("upstream fault must not be a model-output error, got %v", n.failErr)
 	}
 }
 
@@ -473,7 +522,13 @@ func mustReason(s string) kiroSemanticEvent {
 	}
 	return ev
 }
-func mustUsage(in, out int) kiroSemanticEvent { return newUsageSnapshot(in, out) }
+func mustUsage(in, out int) kiroSemanticEvent {
+	ev, err := newUsageSnapshot(in, out)
+	if err != nil {
+		panic(err)
+	}
+	return ev
+}
 func mustCredit(c float64) kiroSemanticEvent {
 	ev, err := newCreditDelta(c)
 	if err != nil {
@@ -481,8 +536,20 @@ func mustCredit(c float64) kiroSemanticEvent {
 	}
 	return ev
 }
-func mustContext(p float64) kiroSemanticEvent { return newContextUsageSnapshot(p) }
-func mustStop(r string) kiroSemanticEvent     { return newStopMetadata(r) }
+func mustContext(p float64) kiroSemanticEvent {
+	ev, err := newContextUsageSnapshot(p)
+	if err != nil {
+		panic(err)
+	}
+	return ev
+}
+func mustStop(r string) kiroSemanticEvent {
+	ev, err := newStopMetadata(r)
+	if err != nil {
+		panic(err)
+	}
+	return ev
+}
 func mustToolStart(id, name string) kiroSemanticEvent {
 	if id == "" {
 		// constructor requires id; normalizer synthesizes on empty via start with gen path.
@@ -497,10 +564,14 @@ func mustToolStart(id, name string) kiroSemanticEvent {
 	return ev
 }
 func mustToolInput(id, name, input string, replace bool) kiroSemanticEvent {
-	if id == "" {
-		return kiroSemanticEvent{kind: kiroKindToolInput, toolID: "", toolName: name, toolInput: input, replace: replace}
+	mode := toolInputAppend
+	if replace {
+		mode = toolInputReplace
 	}
-	ev, err := newToolInput(id, name, input, replace)
+	if id == "" {
+		return kiroSemanticEvent{kind: kiroKindToolInput, toolID: "", toolName: name, toolInput: input, inputMode: mode}
+	}
+	ev, err := newToolInput(id, name, input, mode)
 	if err != nil {
 		panic(err)
 	}
