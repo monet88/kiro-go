@@ -1,0 +1,58 @@
+proxy/kiro_semantic_extractor.go
+  s_e96436510293d5::t_9895873b1500a4 52-54,96-98,103-107
+  s_e96436510293d5::t_846a0801aa53a9 109-111
+  s_e96436510293d5::t_72b362bcec6980 164,170,221,227
+proxy/assistant_wire_test.go
+  s_e96436510293d5::t_5a1c194b2210d4 260
+proxy/kiro_callback_adapter.go
+  s_e96436510293d5::t_687138fedd85c0 48,54
+  s_e96436510293d5::t_5a1c194b2210d4 49
+  s_e96436510293d5::t_341f2e8270c8c1 85-100
+proxy/kiro_semantic_event_test.go
+  s_e96436510293d5::t_df68c8da9b15de 24-29,33-46
+  s_e96436510293d5::t_a1c086f3454dc3 47-48,51-54,56-62
+  s_e96436510293d5::t_5a1c194b2210d4 21
+proxy/kiro_semantic_event.go
+  s_e96436510293d5::t_bdd3dfb0020fc7 32-46
+  s_e96436510293d5::t_a78906cf526354 70
+  s_e96436510293d5::t_62394e8e5f32ed 126-129,134,144-148,151-155,158-161,165-168
+  s_e96436510293d5::t_af2d37e240982f 23-31,58-59,97,112
+proxy/assistant_normalizer.go
+  s_e96436510293d5::t_70c837b76093e3 173
+  s_e96436510293d5::t_d5301d6f5e047a 591-610
+  s_e96436510293d5::t_72b362bcec6980 146
+proxy/assistant_normalizer_test.go
+  s_e96436510293d5::t_26485463f9787b 525-531
+  s_e96436510293d5::t_78d2f5c3448b63 567-570,572,574
+  s_e96436510293d5::t_13badf51e267ad 124-171
+  s_e96436510293d5::t_afc7dcd804f07d 5
+  s_e96436510293d5::t_ee1d5bf87d5c4c 539-552
+proxy/kiro_callback_parity_test.go
+  s_e96436510293d5::t_1de4df4189a2e8 37-38,126-127
+  s_e96436510293d5::t_1a3e3fd624f130 284-313
+  s_0ba809ab3976ee::t_5a0df4206bf679 283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "16fe3b4518082c63feabbdb773fab14905a37238",
+  "prompts": {},
+  "sessions": {
+    "s_0ba809ab3976ee": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03132620-7350-4f50-a081-6a0fe3911b19",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_e96436510293d5": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "5949b184-6cc9-4dec-b4cb-2c64a23479f2",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
