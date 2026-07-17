@@ -12,18 +12,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// parseEventStream decodes an AWS binary Event Stream response body.
+// parseEventStream decodes an AWS binary Event Stream response body into the
+// production Kiro Semantic Extractor, then renders events through the
+// compatibility callback adapter. There is one decoder/extractor path.
 func parseEventStream(ctx context.Context, body io.Reader, callback *KiroStreamCallback) error {
-	if callback == nil {
-		callback = &KiroStreamCallback{}
-	}
-
-	// Read directly without bufio to avoid buffering latency in streaming responses.
-	var inputTokens, outputTokens int
-	var totalCredits float64
-	var currentToolUse *toolUseState
-	var lastAssistantContent string
-	var lastReasoningContent string
+	adapter := newKiroCallbackAdapter(callback)
+	extractor := newKiroSemanticExtractor()
 	var contentEventCount int
 
 	for {
@@ -71,65 +65,13 @@ func parseEventStream(ctx context.Context, body io.Reader, callback *KiroStreamC
 
 		eventType := extractEventType(msgBuf[0:headersLength])
 		payloadBytes := msgBuf[headersLength : len(msgBuf)-4]
-		if len(payloadBytes) == 0 {
-			continue
-		}
-
-		var event map[string]interface{}
-		if err := json.Unmarshal(payloadBytes, &event); err != nil {
-			continue
-		}
-
-		inputTokens, outputTokens = updateTokensFromEvent(event, inputTokens, outputTokens)
-
-		// Dispatch by event type.
-		switch eventType {
-		case "assistantResponseEvent":
-			if content, ok := event["content"].(string); ok && content != "" {
-				normalized := normalizeChunk(content, &lastAssistantContent)
-				if normalized != "" && callback.OnText != nil {
-					callback.OnText(normalized, false)
-				}
-			}
-		case "reasoningContentEvent":
-			if text, ok := event["text"].(string); ok && text != "" {
-				normalized := normalizeChunk(text, &lastReasoningContent)
-				if normalized != "" && callback.OnText != nil {
-					callback.OnText(normalized, true)
-				}
-			}
-		case "toolUseEvent":
-			currentToolUse = handleToolUseEvent(event, currentToolUse, callback)
-		case "meteringEvent":
-			if usage, ok := event["usage"].(float64); ok {
-				totalCredits += usage
-			}
-		case "contextUsageEvent":
-			if pct, ok := event["contextUsagePercentage"].(float64); ok {
-				if callback.OnContextUsage != nil {
-					callback.OnContextUsage(pct)
-				}
-			}
-		case "metadataEvent":
-			// Upstream end-of-turn metadata (stopReason TOOL_USE / END_TURN).
-			// Informative only — tool_use is already delivered via toolUseEvent,
-			// and handlers derive stop_reason from collected tool uses. Do not
-			// warn on every turn; it floods logs during agent loops.
-		default:
-			logger.Debugf("[EventStream] Unhandled event type=%q payload=%s", eventType, string(payloadBytes))
+		for _, ev := range extractor.ingestJSONPayload(eventType, payloadBytes) {
+			adapter.handle(ev)
 		}
 	}
 
-	if currentToolUse != nil {
-		finishToolUse(currentToolUse, callback)
-	}
-
-	if callback.OnCredits != nil && totalCredits > 0 {
-		callback.OnCredits(totalCredits)
-	}
-
-	if callback.OnComplete != nil {
-		callback.OnComplete(inputTokens, outputTokens)
+	for _, ev := range extractor.finish() {
+		adapter.handle(ev)
 	}
 	return nil
 }
