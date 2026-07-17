@@ -1,9 +1,7 @@
 package proxy
 
 import (
-	"context"
 	"encoding/json"
-	"io"
 	"kiro-go/logger"
 	"regexp"
 	"strconv"
@@ -12,69 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// parseEventStream decodes an AWS binary Event Stream response body into the
-// production Kiro Semantic Extractor, then renders events through the
-// compatibility callback adapter. There is one decoder/extractor path.
-func parseEventStream(ctx context.Context, body io.Reader, callback *KiroStreamCallback) error {
-	adapter := newKiroCallbackAdapter(callback)
-	extractor := newKiroSemanticExtractor()
-	var contentEventCount int
-
-	for {
-		// Stop promptly if the client disconnected or the request was cancelled,
-		// so we don't keep reading from / writing to a dead connection.
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-		}
-
-		// Prelude: 12 bytes (total_len + headers_len + crc)
-		prelude := make([]byte, 12)
-		preludeN, err := io.ReadFull(body, prelude)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			logger.Warnf("[EventStream] Prelude read failed at byte %d after %d content events: %v", preludeN, contentEventCount, err)
-			return err
-		}
-		contentEventCount++
-
-		totalLength := int(prelude[0])<<24 | int(prelude[1])<<16 | int(prelude[2])<<8 | int(prelude[3])
-		headersLength := int(prelude[4])<<24 | int(prelude[5])<<16 | int(prelude[6])<<8 | int(prelude[7])
-
-		if totalLength < 16 {
-			continue
-		}
-
-		// Read the remaining message bytes.
-		remaining := totalLength - 12
-		msgBuf := make([]byte, remaining)
-		_, err = io.ReadFull(body, msgBuf)
-		if err != nil {
-			logger.Warnf("[EventStream] Message body read failed at event %d (totalLen=%d headersLen=%d): %v", contentEventCount, totalLength, headersLength, err)
-			return err
-		}
-
-		if headersLength > len(msgBuf)-4 {
-			continue
-		}
-
-		eventType := extractEventType(msgBuf[0:headersLength])
-		payloadBytes := msgBuf[headersLength : len(msgBuf)-4]
-		for _, ev := range extractor.ingestJSONPayload(eventType, payloadBytes) {
-			adapter.handle(ev)
-		}
-	}
-
-	for _, ev := range extractor.finish() {
-		adapter.handle(ev)
-	}
-	return nil
-}
+// parseEventStream lives in kiro_stream_consume.go (single decoder path).
 
 func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, currentOutputTokens int) (int, int) {
 	candidates := []map[string]interface{}{event}

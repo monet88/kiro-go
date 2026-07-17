@@ -62,6 +62,16 @@ func (e *kiroSemanticExtractor) ingestJSONPayload(eventType string, payloadBytes
 				}
 			}
 		}
+		// Complete toolUses[] array entries become start/input/stop semantics.
+		if arr, ok := event["toolUses"].([]interface{}); ok {
+			for _, item := range arr {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				out = append(out, e.ingestCompleteToolUse(m)...)
+			}
+		}
 	case "reasoningContentEvent":
 		if text, ok := event["text"].(string); ok && text != "" {
 			normalized := normalizeChunk(text, &e.lastReasoningContent)
@@ -182,5 +192,36 @@ func (e *kiroSemanticExtractor) finish() []kiroSemanticEvent {
 	var out []kiroSemanticEvent
 	out = append(out, e.emitToolStop()...)
 	out = append(out, newTerminalBoundary())
+	return out
+}
+
+func (e *kiroSemanticExtractor) ingestCompleteToolUse(event map[string]interface{}) []kiroSemanticEvent {
+	toolUseID := firstStringField(event, "toolUseId", "toolUseID", "tool_use_id", "id")
+	name := firstStringField(event, "name", "toolName", "tool_name")
+	if name == "" {
+		return nil
+	}
+	if toolUseID == "" {
+		toolUseID = "toolu_" + uuid.New().String()
+	}
+	var out []kiroSemanticEvent
+	if ev, err := newToolStart(toolUseID, name); err == nil {
+		out = append(out, ev)
+	}
+	if input, ok := event["input"].(string); ok && input != "" {
+		if ev, err := newToolInput(toolUseID, name, input, false); err == nil {
+			out = append(out, ev)
+		}
+	} else if inputObj, ok := event["input"].(map[string]interface{}); ok {
+		data, _ := json.Marshal(inputObj)
+		if len(data) > 0 {
+			if ev, err := newToolInput(toolUseID, name, string(data), true); err == nil {
+				out = append(out, ev)
+			}
+		}
+	}
+	if ev, err := newToolStop(toolUseID, name); err == nil {
+		out = append(out, ev)
+	}
 	return out
 }
