@@ -142,47 +142,23 @@ func (h *Handler) handleResponsesNonStream(
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
 ) {
 	requestStartedAt := time.Now()
-	excluded := make(map[string]bool)
-	var lastErr error
-	var lastAccount *config.Account
-	// Panic safety net: guarantees the routing slot is released even if a panic
-	// unwinds the stack. release is sync.Once-idempotent.
-	var activeRelease func()
-	defer func() {
-		if activeRelease != nil {
-			activeRelease()
-		}
-	}()
 
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		account, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, payload.RoutingAffinityKey)
-		if acquireErr != nil {
-			if isRoutingLimitError(acquireErr) {
-				h.recordFailure()
-				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
-				recordRequestMetrics("responses", model, false, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-				h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(acquireErr))
-				return
-			}
-			break
-		}
-		activeRelease = release
-		if err := h.ensureValidToken(account); err != nil {
-			release()
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			if shouldBackoffBeforeRetry(err) {
-				time.Sleep(retryBackoffAfterRateLimit())
-			}
-			continue
-		}
+	// Per-attempt render state, hoisted to caller scope so the JSON response is
+	// written after Account Routing releases the slot. Non-stream never commits
+	// output mid-attempt, so every failure is a clean failover (attemptRetry).
+	var content, reasoningContent string
+	var toolUses []KiroToolUse
+	var inputTokens, outputTokens int
+	var credits float64
+	var realInputTokens int
+	var okAccount *config.Account
 
-		var content, reasoningContent string
-		var toolUses []KiroToolUse
-		var inputTokens, outputTokens int
-		var credits float64
-		var realInputTokens int
+	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
+		content, reasoningContent = "", ""
+		toolUses = nil
+		inputTokens, outputTokens = 0, 0
+		credits = 0
+		realInputTokens = 0
 
 		callback := &KiroStreamCallback{
 			OnText: func(text string, isThinking bool) {
@@ -200,19 +176,25 @@ func (h *Handler) handleResponsesNonStream(
 			},
 		}
 
-		err := CallKiroAPI(ctx, account, payload, callback)
-		release()
-		if err != nil {
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			if shouldBackoffBeforeRetry(err) {
-				time.Sleep(retryBackoffAfterRateLimit())
-			}
-			continue
+		if err := CallKiroAPI(ctx, account, payload, callback); err != nil {
+			return attemptRetry(err)
 		}
+		okAccount = account
+		return attemptSuccess()
+	})
 
-		finalContent, _ := extractThinkingFromContent(content)
+	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+
+	if outcome.stopReason == routeStopSuccess {
+		account := okAccount
+		finalContent, extractedReasoning := extractThinkingFromContent(content)
+		// Explicit reasoningContentEvent wins; fall back to inline <thinking>
+		// tags extracted from the assistant text (mirrors the OpenAI handler).
+		if thinking && reasoningContent == "" && extractedReasoning != "" {
+			reasoningContent = extractedReasoning
+		}
 		if !thinking {
 			reasoningContent = ""
 		}
@@ -229,7 +211,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
+		respObj := buildResponsesObject(respID, model, finalContent, reasoningContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions
 
@@ -244,23 +226,45 @@ func (h *Handler) handleResponsesNonStream(
 		return
 	}
 
-	if lastErr == nil {
+	if outcome.stopReason == routeStopRoutingLimit {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.acquireErr, http.StatusTooManyRequests, "rate_limit_error")
+		recordRequestMetrics("responses", model, false, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+		h.sendOpenAIError(w, 429, "rate_limit_error", routingErrorMessage(outcome.acquireErr))
+		return
+	}
+
+	if outcome.lastErr == nil {
 		recordRequestMetrics("responses", model, false, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
 	h.recordFailure()
-	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
-	recordRequestMetrics("responses", model, false, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-	logRetryExhausted("responses", model, statusCode, errType, lastErr)
-	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(lastErr))
+	statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "server_error")
+	recordRequestMetrics("responses", model, false, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	logRetryExhausted("responses", model, statusCode, errType, outcome.lastErr)
+	h.sendOpenAIError(w, statusCode, clientFacingOpenAIErrorType(statusCode), improperlyFormedClientMessage(outcome.lastErr))
 }
 
 func buildResponsesObject(
-	id, model, content string, toolUses []KiroToolUse,
+	id, model, content, reasoning string, toolUses []KiroToolUse,
 	inputTokens, outputTokens int, req *ResponsesRequest,
 ) *ResponsesObject {
-	output := make([]ResponseOutputItem, 0, 1+len(toolUses))
+	output := make([]ResponseOutputItem, 0, 2+len(toolUses))
+
+	// A reasoning item precedes the message item (mirrors OpenAI's own Responses
+	// ordering: reasoning summary, then the assistant message).
+	if strings.TrimSpace(reasoning) != "" {
+		output = append(output, ResponseOutputItem{
+			ID:     generateOutputItemID("rs"),
+			Type:   "reasoning",
+			Status: "completed",
+			Summary: []ResponseSummaryPart{{
+				Type: "summary_text",
+				Text: reasoning,
+			}},
+		})
+	}
 
 	if strings.TrimSpace(content) != "" {
 		output = append(output, ResponseOutputItem{
@@ -357,81 +361,91 @@ func (h *Handler) handleResponsesStream(
 		"response": initial,
 	})
 
-	excluded := make(map[string]bool)
-	var lastErr error
-	var lastAccount *config.Account
-	responseStarted := false
-	// Panic safety net: guarantees the routing slot is released even if a panic
-	// unwinds the stack. release is sync.Once-idempotent.
-	var activeRelease func()
-	defer func() {
-		if activeRelease != nil {
-			activeRelease()
-		}
-	}()
+	// Per-attempt render state, hoisted to caller scope so terminal rendering
+	// (response.completed / response.failed + [DONE]) runs after Account Routing
+	// releases the slot, while streaming events still emit inside the callback
+	// under the slot. responseStarted is the semantic-output commit flag: the
+	// response.created / response.in_progress preamble does NOT set it, so a
+	// failure before any real output still fails over.
+	var (
+		msgText         strings.Builder
+		reasoningText   strings.Builder
+		currentItemText strings.Builder
+		toolUses        []KiroToolUse
+		inputTokens     int
+		outputTokens    int
+		credits         float64
+		realInputTokens int
+		firstTokenAt    time.Time
+		finalContent    string
+		currentItemType string
+		currentItemID   string
+		outputIndex     int
+		thinkingSource  thinkingStreamSource
+		dropTagThinking bool
+		responseStarted bool
+		okAccount       *config.Account
+	)
 
-	for attempt := 0; attempt < getAccountRetryAttempts(); attempt++ {
-		account, release, acquireErr := h.acquireRouteAccount(ctx, model, excluded, payload.RoutingAffinityKey)
-		if acquireErr != nil {
-			if isRoutingLimitError(acquireErr) {
-				h.recordFailure()
-				statusCode, errType := metricsErrorDetails(acquireErr, http.StatusTooManyRequests, "rate_limit_error")
-				recordRequestMetrics("responses", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-				send("response.failed", map[string]interface{}{
-					"type": "response.failed",
-					"response": map[string]interface{}{
-						"id":     respID,
-						"status": "failed",
-						"error":  map[string]string{"type": "rate_limit_error", "message": routingErrorMessage(acquireErr)},
-					},
-				})
-				return
-			}
-			break
-		}
-		activeRelease = release
-		if err := h.ensureValidToken(account); err != nil {
-			release()
-			lastErr = err
-			lastAccount = account
-			h.handleAccountError(account, excluded, err)
-			if shouldBackoffBeforeRetry(err) {
-				time.Sleep(retryBackoffAfterRateLimit())
-			}
-			continue
-		}
+	outcome := h.runWithAccount(ctx, model, payload.RoutingAffinityKey, func(account *config.Account) attemptResult {
+		// Reset per-attempt state so a failover starts clean.
+		msgText.Reset()
+		reasoningText.Reset()
+		currentItemText.Reset()
+		toolUses = nil
+		inputTokens, outputTokens = 0, 0
+		credits = 0
+		realInputTokens = 0
+		firstTokenAt = time.Time{}
+		finalContent = ""
+		currentItemType = ""
+		currentItemID = ""
+		outputIndex = 0
+		thinkingSource = thinkingSourceUnknown
+		dropTagThinking = false
+		responseStarted = false
 
 		send("response.in_progress", map[string]interface{}{
 			"type":     "response.in_progress",
 			"response": initial,
 		})
 
-		var (
-			fullText        strings.Builder
-			reasoningText   strings.Builder
-			toolUses        []KiroToolUse
-			inputTokens     int
-			outputTokens    int
-			credits         float64
-			realInputTokens int
-			firstTokenAt    time.Time
-		)
-
-		messageItemID := generateOutputItemID("msg")
-		messageStarted := false
-		outputIndex := 0
-		contentIndex := 0
-
-		ensureMessageStarted := func() {
-			if messageStarted {
-				return
-			}
-			messageStarted = true
+		// Item lifecycle helpers. Reasoning and message are SEPARATE output items
+		// (mirrors OpenAI's own Responses shape and sub2api): a reasoning item
+		// carries summary_text parts, a message item carries output_text parts.
+		// Only one item is open at a time; switching kind closes the current one
+		// and opens the next at a fresh output_index.
+		openReasoningItem := func() {
+			currentItemType = "reasoning"
+			currentItemID = generateOutputItemID("rs")
+			currentItemText.Reset()
 			send("response.output_item.added", map[string]interface{}{
 				"type":         "response.output_item.added",
 				"output_index": outputIndex,
 				"item": map[string]interface{}{
-					"id":      messageItemID,
+					"id":      currentItemID,
+					"type":    "reasoning",
+					"status":  "in_progress",
+					"summary": []map[string]interface{}{},
+				},
+			})
+			send("response.reasoning_summary_part.added", map[string]interface{}{
+				"type":          "response.reasoning_summary_part.added",
+				"item_id":       currentItemID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"part":          map[string]interface{}{"type": "summary_text", "text": ""},
+			})
+		}
+		openMessageItem := func() {
+			currentItemType = "message"
+			currentItemID = generateOutputItemID("msg")
+			currentItemText.Reset()
+			send("response.output_item.added", map[string]interface{}{
+				"type":         "response.output_item.added",
+				"output_index": outputIndex,
+				"item": map[string]interface{}{
+					"id":      currentItemID,
 					"type":    "message",
 					"role":    "assistant",
 					"status":  "in_progress",
@@ -440,14 +454,155 @@ func (h *Handler) handleResponsesStream(
 			})
 			send("response.content_part.added", map[string]interface{}{
 				"type":          "response.content_part.added",
-				"item_id":       messageItemID,
+				"item_id":       currentItemID,
 				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"part": map[string]interface{}{
-					"type": "output_text",
-					"text": "",
-				},
+				"content_index": 0,
+				"part":          map[string]interface{}{"type": "output_text", "text": ""},
 			})
+		}
+		closeItem := func() {
+			switch currentItemType {
+			case "message":
+				text := currentItemText.String()
+				send("response.output_text.done", map[string]interface{}{
+					"type":          "response.output_text.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"content_index": 0,
+					"text":          text,
+				})
+				send("response.content_part.done", map[string]interface{}{
+					"type":          "response.content_part.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"content_index": 0,
+					"part":          map[string]interface{}{"type": "output_text", "text": text},
+				})
+				send("response.output_item.done", map[string]interface{}{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      currentItemID,
+						"type":    "message",
+						"role":    "assistant",
+						"status":  "completed",
+						"content": []map[string]interface{}{{"type": "output_text", "text": text}},
+					},
+				})
+			case "reasoning":
+				text := currentItemText.String()
+				send("response.reasoning_summary_text.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_text.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"summary_index": 0,
+					"text":          text,
+				})
+				send("response.reasoning_summary_part.done", map[string]interface{}{
+					"type":          "response.reasoning_summary_part.done",
+					"item_id":       currentItemID,
+					"output_index":  outputIndex,
+					"summary_index": 0,
+					"part":          map[string]interface{}{"type": "summary_text", "text": text},
+				})
+				send("response.output_item.done", map[string]interface{}{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id":      currentItemID,
+						"type":    "reasoning",
+						"status":  "completed",
+						"summary": []map[string]interface{}{{"type": "summary_text", "text": text}},
+					},
+				})
+			default:
+				return
+			}
+			currentItemType = ""
+			currentItemID = ""
+			currentItemText.Reset()
+			outputIndex++
+		}
+
+		emitText := func(text string) {
+			if text == "" {
+				return
+			}
+			if currentItemType != "message" {
+				closeItem()
+				openMessageItem()
+			}
+			msgText.WriteString(text)
+			currentItemText.WriteString(text)
+			send("response.output_text.delta", map[string]interface{}{
+				"type":          "response.output_text.delta",
+				"item_id":       currentItemID,
+				"output_index":  outputIndex,
+				"content_index": 0,
+				"delta":         text,
+			})
+			responseStarted = true
+		}
+		emitReasoning := func(text string) {
+			if text == "" || !thinking {
+				return
+			}
+			if currentItemType != "reasoning" {
+				closeItem()
+				openReasoningItem()
+			}
+			reasoningText.WriteString(text)
+			currentItemText.WriteString(text)
+			send("response.reasoning_summary_text.delta", map[string]interface{}{
+				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       currentItemID,
+				"output_index":  outputIndex,
+				"summary_index": 0,
+				"delta":         text,
+			})
+			responseStarted = true
+		}
+
+		// Splitter separates plain assistant text from inline <thinking> blocks
+		// so a literal tag never opens a phantom reasoning item, and real
+		// reasoning is routed into a reasoning output item instead of leaking
+		// raw <thinking> markers into output_text deltas (the previous bug).
+		splitter := &thinkingSplitter{
+			onPlain: func(t string) { emitText(t) },
+			onOpen:  func() { dropTagThinking = !allowTagSource(&thinkingSource) },
+			onThinking: func(t string) {
+				if dropTagThinking {
+					return
+				}
+				emitReasoning(t)
+			},
+			onClose: func() {
+				wasDrop := dropTagThinking
+				dropTagThinking = false
+				if wasDrop {
+					return
+				}
+				if currentItemType == "reasoning" {
+					closeItem()
+				}
+			},
+		}
+
+		processText := func(text string, isThinking bool, forceFlush bool) {
+			if isThinking {
+				if !thinking {
+					return
+				}
+				if !allowReasoningSource(&thinkingSource) {
+					return
+				}
+				emitReasoning(text)
+				return
+			}
+			splitter.push(text)
+			if forceFlush {
+				splitter.flush()
+			}
 		}
 
 		callback := &KiroStreamCallback{
@@ -458,50 +613,13 @@ func (h *Handler) handleResponsesStream(
 				if firstTokenAt.IsZero() {
 					firstTokenAt = time.Now()
 				}
-				if isThinking {
-					reasoningText.WriteString(text)
-					return
-				}
-				fullText.WriteString(text)
-				ensureMessageStarted()
-				send("response.output_text.delta", map[string]interface{}{
-					"type":          "response.output_text.delta",
-					"item_id":       messageItemID,
-					"output_index":  outputIndex,
-					"content_index": contentIndex,
-					"delta":         text,
-				})
-				responseStarted = true
+				processText(text, isThinking, false)
 			},
 			OnToolUse: func(tu KiroToolUse) {
-				if messageStarted {
-					send("response.content_part.done", map[string]interface{}{
-						"type":          "response.content_part.done",
-						"item_id":       messageItemID,
-						"output_index":  outputIndex,
-						"content_index": contentIndex,
-						"part": map[string]interface{}{
-							"type": "output_text",
-							"text": fullText.String(),
-						},
-					})
-					send("response.output_item.done", map[string]interface{}{
-						"type":         "response.output_item.done",
-						"output_index": outputIndex,
-						"item": map[string]interface{}{
-							"id":     messageItemID,
-							"type":   "message",
-							"role":   "assistant",
-							"status": "completed",
-							"content": []map[string]interface{}{{
-								"type": "output_text",
-								"text": fullText.String(),
-							}},
-						},
-					})
-					messageStarted = false
-					outputIndex++
-				}
+				// Flush buffered tagged text and close any open reasoning/message
+				// item before the function_call item opens.
+				processText("", false, true)
+				closeItem()
 
 				toolUses = append(toolUses, tu)
 				args, _ := json.Marshal(tu.Input)
@@ -547,67 +665,38 @@ func (h *Handler) handleResponsesStream(
 		}
 
 		err := CallKiroAPI(ctx, account, payload, callback)
-		release()
 		if err != nil {
+			// Before any semantic model output: fail over to another Account.
+			// The response.created/in_progress preamble is not model output, so
+			// its emission alone does not block failover.
 			if !responseStarted {
-				lastErr = err
-				h.handleAccountError(account, excluded, err)
-				if shouldBackoffBeforeRetry(err) {
-					time.Sleep(retryBackoffAfterRateLimit())
-				}
-				continue
+				return attemptRetry(err)
 			}
-			statusCode, errType := metricsErrorDetails(err, http.StatusInternalServerError, "server_error")
-			recordRequestMetrics("responses", model, true, account, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
-			send("response.failed", map[string]interface{}{
-				"type": "response.failed",
-				"response": map[string]interface{}{
-					"id":     respID,
-					"status": "failed",
-					"error": map[string]string{
-						"type":    "server_error",
-						"message": err.Error(),
-					},
-				},
-			})
-			// Match the success path: terminate the SSE stream with [DONE] so
-			// clients stop reading instead of hanging.
-			sse.WriteData("[DONE]")
-			h.recordFailure()
-			return
+			// Semantic output already committed: cannot fail over. Stop; the
+			// caller closes the SSE stream after the slot is released.
+			return attemptStop(err, true)
 		}
 
-		finalContent, _ := extractThinkingFromContent(fullText.String())
+		// Flush buffered model output and close the open item while the slot is
+		// still held (model output, not a terminal control frame).
+		processText("", false, true)
+		closeItem()
+		finalContent = msgText.String()
+		okAccount = account
+		return attemptSuccess()
+	})
+
+	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+
+	// Success: slot released; compute usage, persist, and emit the terminal
+	// response.completed + [DONE].
+	if outcome.stopReason == routeStopSuccess {
+		account := okAccount
 		reasoning := reasoningText.String()
 		if !thinking {
 			reasoning = ""
-		}
-
-		if messageStarted {
-			send("response.content_part.done", map[string]interface{}{
-				"type":          "response.content_part.done",
-				"item_id":       messageItemID,
-				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"part": map[string]interface{}{
-					"type": "output_text",
-					"text": finalContent,
-				},
-			})
-			send("response.output_item.done", map[string]interface{}{
-				"type":         "response.output_item.done",
-				"output_index": outputIndex,
-				"item": map[string]interface{}{
-					"id":     messageItemID,
-					"type":   "message",
-					"role":   "assistant",
-					"status": "completed",
-					"content": []map[string]interface{}{{
-						"type": "output_text",
-						"text": finalContent,
-					}},
-				},
-			})
 		}
 
 		if realInputTokens > 0 {
@@ -626,7 +715,7 @@ func (h *Handler) handleResponsesStream(
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 
-		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
+		respObj := buildResponsesObject(respID, model, finalContent, reasoning, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
 		respObj.StoredInput = storedInput
 		respObj.Instructions = req.Instructions
@@ -645,7 +734,43 @@ func (h *Handler) handleResponsesStream(
 		return
 	}
 
-	if lastErr == nil {
+	// Semantic output already committed then upstream failed: emit response.failed
+	// + [DONE] now that the slot is released.
+	if outcome.stopReason == routeStopCallerTerminal {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "server_error")
+		recordRequestMetrics("responses", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
+		send("response.failed", map[string]interface{}{
+			"type": "response.failed",
+			"response": map[string]interface{}{
+				"id":     respID,
+				"status": "failed",
+				"error": map[string]string{
+					"type":    "server_error",
+					"message": outcome.lastErr.Error(),
+				},
+			},
+		})
+		sse.WriteData("[DONE]")
+		return
+	}
+
+	if outcome.stopReason == routeStopRoutingLimit {
+		h.recordFailure()
+		statusCode, errType := metricsErrorDetails(outcome.acquireErr, http.StatusTooManyRequests, "rate_limit_error")
+		recordRequestMetrics("responses", model, true, nil, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+		send("response.failed", map[string]interface{}{
+			"type": "response.failed",
+			"response": map[string]interface{}{
+				"id":     respID,
+				"status": "failed",
+				"error":  map[string]string{"type": "rate_limit_error", "message": routingErrorMessage(outcome.acquireErr)},
+			},
+		})
+		return
+	}
+
+	if outcome.lastErr == nil {
 		recordRequestMetrics("responses", model, true, nil, apiKeyID, false, http.StatusServiceUnavailable, "no_available_accounts", estimatedInputTokens, 0, 0, requestStartedAt)
 		send("response.failed", map[string]interface{}{
 			"type": "response.failed",
@@ -661,9 +786,9 @@ func (h *Handler) handleResponsesStream(
 		return
 	}
 	h.recordFailure()
-	statusCode, errType := metricsErrorDetails(lastErr, http.StatusInternalServerError, "server_error")
-	recordRequestMetrics("responses", model, true, lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
-	logRetryExhausted("responses", model, statusCode, errType, lastErr)
+	statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "server_error")
+	recordRequestMetrics("responses", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, 0, 0, requestStartedAt)
+	logRetryExhausted("responses", model, statusCode, errType, outcome.lastErr)
 	send("response.failed", map[string]interface{}{
 		"type": "response.failed",
 		"response": map[string]interface{}{
@@ -671,7 +796,7 @@ func (h *Handler) handleResponsesStream(
 			"status": "failed",
 			"error": map[string]string{
 				"type":    clientFacingOpenAIErrorType(statusCode),
-				"message": improperlyFormedClientMessage(lastErr),
+				"message": improperlyFormedClientMessage(outcome.lastErr),
 			},
 		},
 	})

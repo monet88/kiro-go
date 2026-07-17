@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"kiro-go/auth"
@@ -48,6 +49,9 @@ type Handler struct {
 	tokenRefreshLocks sync.Map
 	// kamImports 跟踪批量(kam)导入任务的进度,供前端轮询查询。
 	kamImports *kamImportManager
+	// acquireOverride is a test-only seam that replaces the pool acquire in
+	// runWithAccount. nil in production. See acquireRouteAccount.
+	acquireOverride func(ctx context.Context, model string, excluded map[string]bool, affinityKey string) (*config.Account, func(), error)
 }
 
 // accountRefreshLock 返回该账号专属的 token 刷新锁,惰性创建。

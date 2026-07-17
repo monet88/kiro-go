@@ -277,6 +277,12 @@ func setupResponsesTestHandler(t *testing.T) (*Handler, func()) {
 	if err := config.UpdateEndpointFallback(false); err != nil {
 		t.Fatalf("disable fallback: %v", err)
 	}
+	// Successful stream/non-stream handlers kick UpdateStats which saves config
+	// from a background goroutine. On Windows that keeps the TempDir open past
+	// the test body and flaky-fails RemoveAll; give the write a moment to finish.
+	t.Cleanup(func() {
+		time.Sleep(150 * time.Millisecond)
+	})
 	p := accountpool.GetPool()
 	p.Reload()
 	h := &Handler{
@@ -389,5 +395,94 @@ func TestResponsesStreamSSE(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, "stream chunk") {
 		t.Fatalf("expected stream content delta, got:\n%s", bodyStr)
+	}
+}
+
+// A real <thinking>...</thinking> block in a thinking-enabled Responses stream
+// must be routed into a reasoning output item (reasoning_summary_text deltas),
+// NOT leaked as raw <thinking> markers inside output_text deltas. This is the
+// regression guard for the "raw tags in stream" bug.
+func TestResponsesStreamRoutesThinkingToReasoningItem(t *testing.T) {
+	h, cleanup := setupResponsesTestHandler(t)
+	defer cleanup()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{
+			"content": "<thinking>\nweighing options</thinking>\n\nfinal answer",
+		}))
+	}))
+	defer server.Close()
+	defer swapKiroEndpointsForTest(t, server)()
+
+	body := strings.NewReader(`{"model":"claude-sonnet-4.5-thinking","input":"think please","stream":true,"store":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", body)
+	rec := httptest.NewRecorder()
+
+	h.handleOpenAIResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	bodyBytes, _ := io.ReadAll(rec.Body)
+	bodyStr := string(bodyBytes)
+
+	if !strings.Contains(bodyStr, "response.reasoning_summary_text.delta") {
+		t.Fatalf("expected reasoning summary delta, got:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "weighing options") {
+		t.Fatalf("expected reasoning text, got:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "final answer") {
+		t.Fatalf("expected plain final answer, got:\n%s", bodyStr)
+	}
+	// The raw markers must never appear in any streamed delta.
+	if strings.Contains(bodyStr, `\u003cthinking\u003e`) || strings.Contains(bodyStr, "<thinking>") {
+		t.Fatalf("raw <thinking> marker leaked into stream:\n%s", bodyStr)
+	}
+	if strings.Contains(bodyStr, `\u003c/thinking\u003e`) || strings.Contains(bodyStr, "</thinking>") {
+		t.Fatalf("raw </thinking> marker leaked into stream:\n%s", bodyStr)
+	}
+}
+
+// A literal <thinking> inside a Markdown code fence must NOT be treated as a
+// reasoning boundary: it stays verbatim in output_text and the message is not
+// truncated. This is the regression guard for the mid-message truncation bug.
+func TestResponsesStreamKeepsLiteralThinkingTagInCodeFence(t *testing.T) {
+	h, cleanup := setupResponsesTestHandler(t)
+	defer cleanup()
+
+	literal := "Here is an example:\n```\n<thinking>not real</thinking>\n```\nDone."
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{
+			"content": literal,
+		}))
+	}))
+	defer server.Close()
+	defer swapKiroEndpointsForTest(t, server)()
+
+	body := strings.NewReader(`{"model":"claude-sonnet-4.5-thinking","input":"show me","stream":true,"store":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", body)
+	rec := httptest.NewRecorder()
+
+	h.handleOpenAIResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	bodyBytes, _ := io.ReadAll(rec.Body)
+	bodyStr := string(bodyBytes)
+
+	// The literal example (including the tail after the fence) must survive as
+	// plain output_text, and no reasoning item should open.
+	if !strings.Contains(bodyStr, "not real") {
+		t.Fatalf("expected literal tag content in output, got:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "Done.") {
+		t.Fatalf("message truncated after literal tag; missing tail, got:\n%s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "response.reasoning_summary_text.delta") {
+		t.Fatalf("literal tag wrongly opened a reasoning item:\n%s", bodyStr)
 	}
 }
