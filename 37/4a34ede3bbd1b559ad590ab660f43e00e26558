@@ -1,0 +1,35 @@
+proxy/kiro_eventstream.go
+  s_0ba809ab3976ee::t_e450f9c59995f7 13
+proxy/model_output_error.go
+  s_0ba809ab3976ee::t_e450f9c59995f7 1-34
+proxy/assistant_adapters.go
+  s_0ba809ab3976ee::t_0beee14de1ec63 1-162
+proxy/kiro_semantic_extractor.go
+  s_0ba809ab3976ee::t_4612d1223b3cd7 65-74
+  s_0ba809ab3976ee::t_38c2762e82d6a0 197-227
+proxy/kiro_stream_consume.go
+  s_0ba809ab3976ee::t_e450f9c59995f7 1-68,72-78
+  s_0ba809ab3976ee::t_d7862ad15623dc 69-71
+proxy/kiro_stream_call.go
+  s_0ba809ab3976ee::t_bcb854b3513061 1-237
+proxy/assistant_collector.go
+  s_0ba809ab3976ee::t_e450f9c59995f7 1-45
+proxy/declared_tools_from_payload.go
+  s_0ba809ab3976ee::t_0beee14de1ec63 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "374a34ede3bbd1b559ad590ab660f43e00e26558",
+  "prompts": {},
+  "sessions": {
+    "s_0ba809ab3976ee": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03132620-7350-4f50-a081-6a0fe3911b19",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
