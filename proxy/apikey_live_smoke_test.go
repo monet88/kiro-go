@@ -69,11 +69,19 @@ func TestLiveApiKeyKiroDevSmoke(t *testing.T) {
 	}
 	payload := OpenAIToKiro(openaiReq, false)
 	var content string
-	cb := &KiroStreamCallback{OnText: func(text string, isThinking bool) { content += text }}
+	tools, err := declaredToolsFromPayload(payload)
+	if err != nil {
+		t.Fatalf("declared tools: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := CallKiroAPI(ctx, account, payload, cb); err != nil {
-		t.Fatalf("CallKiroAPI: %v", err)
+	if err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+		if ev.kind == assistantKindPlainText {
+			content += ev.text
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("streamAssistantFromKiro: %v", err)
 	}
 	if strings.TrimSpace(content) == "" {
 		t.Fatalf("empty stream content")

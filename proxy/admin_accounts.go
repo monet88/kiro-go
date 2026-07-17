@@ -581,16 +581,21 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 	kiroPayload := OpenAIToKiro(openaiReq, thinking)
 
 	var content string
-	callback := &KiroStreamCallback{
-		OnText:         func(text string, isThinking bool) { content += text },
-		OnToolUse:      func(tu KiroToolUse) {},
-		OnComplete:     func(inTok, outTok int) {},
-		OnError:        func(err error) {},
-		OnCredits:      func(c float64) {},
-		OnContextUsage: func(pct float64) {},
+	tools, toolsErr := declaredToolsFromPayload(kiroPayload)
+	if toolsErr != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": toolsErr.Error()})
+		return
 	}
-
-	err := CallKiroAPI(r.Context(), account, kiroPayload, callback)
+	err := streamAssistantFromKiro(r.Context(), account, kiroPayload, tools, func(ev assistantEvent) error {
+		switch ev.kind {
+		case assistantKindPlainText:
+			content += ev.text
+		case assistantKindModelOutputError:
+			return ev.err
+		}
+		return nil
+	})
 	if err != nil {
 		h.handleAccountTestFailure(account, err)
 		w.WriteHeader(500)

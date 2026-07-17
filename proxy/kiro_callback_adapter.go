@@ -9,7 +9,8 @@ import (
 )
 
 // kiroCallbackAdapter renders Kiro Semantic Events onto the legacy
-// KiroStreamCallback surface so PR A preserves production handler behavior.
+// KiroStreamCallback surface for PR A parity fixtures and unit tests.
+// Production handlers no longer use this adapter.
 type kiroCallbackAdapter struct {
 	callback     *KiroStreamCallback
 	inputTokens  int

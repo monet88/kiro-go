@@ -87,6 +87,10 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
 	kiroPayload := OpenAIToKiro(&req, thinking)
+	if _, err := declaredToolsFromPayload(kiroPayload); err != nil {
+		writeInvalidDeclaredTool(w, "openai", err)
+		return
+	}
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	if req.Stream {
@@ -136,8 +140,6 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	var rawContentBuilder strings.Builder
 	var rawReasoningBuilder strings.Builder
 	var firstTokenAt time.Time
-	var dropTagThinking bool
-	var thinkingSource thinkingStreamSource
 	var thinkingStarted bool
 	var eventThinkingOpen bool
 	responseStarted := false
@@ -153,8 +155,6 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 		rawContentBuilder.Reset()
 		rawReasoningBuilder.Reset()
 		firstTokenAt = time.Time{}
-		dropTagThinking = false
-		thinkingSource = thinkingSourceUnknown
 		thinkingStarted = false
 		eventThinkingOpen = false
 		responseStarted = false
@@ -256,149 +256,90 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 			responseStarted = true
 		}
 
-		splitter := &thinkingSplitter{
-			onPlain: func(t string) { sendChunk(t, 0) },
-			onOpen: func() {
-				dropTagThinking = !allowTagSource(&thinkingSource)
-				thinkingStarted = false
-			},
-			onThinking: func(t string) {
-				if dropTagThinking {
-					return
-				}
-				if !thinkingStarted {
-					sendChunk(t, 1)
-					thinkingStarted = true
-				} else {
-					sendChunk(t, 2)
-				}
-			},
-			onClose: func() {
-				wasDrop := dropTagThinking
-				dropTagThinking = false
-				if wasDrop {
-					return
-				}
-				if !thinkingStarted {
-					sendChunk("", 1)
-				}
-				sendChunk("", 3)
-				thinkingStarted = false
-			},
+		tools, toolsErr := declaredToolsFromPayload(payload)
+		if toolsErr != nil {
+			return attemptStop(toolsErr, false)
 		}
-
-		processText := func(text string, isThinking bool, forceFlush bool) {
-			if isThinking && !thinking {
-				return
-			}
-
-			if isThinking {
-				if !allowReasoningSource(&thinkingSource) {
-					return
-				}
-				if !thinkingStarted {
-					sendChunk(text, 1)
-					thinkingStarted = true
-					eventThinkingOpen = true
-				} else {
-					sendChunk(text, 2)
-				}
-				return
-			}
-
-			if eventThinkingOpen {
-				sendChunk("", 3)
-				eventThinkingOpen = false
-				thinkingStarted = false
-			}
-
-			splitter.push(text)
-			if forceFlush {
-				splitter.flush()
-			}
-		}
-
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if text == "" {
-					return
+		err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+			switch ev.kind {
+			case assistantKindPlainText:
+				if ev.text == "" {
+					return nil
 				}
 				if firstTokenAt.IsZero() {
 					firstTokenAt = time.Now()
 				}
-				if isThinking {
-					rawReasoningBuilder.WriteString(text)
-				} else {
-					rawContentBuilder.WriteString(text)
+				rawContentBuilder.WriteString(ev.text)
+				// Normalizer already separated tags; do not re-run thinkingSplitter.
+				if eventThinkingOpen {
+					sendChunk("", 3)
+					eventThinkingOpen = false
+					thinkingStarted = false
 				}
-				processText(text, isThinking, false)
-			},
-			OnToolUse: func(tu KiroToolUse) {
-				processText("", false, true)
-
-				args, _ := json.Marshal(tu.Input)
-				rawContentBuilder.WriteString(tu.Name)
-				rawContentBuilder.Write(args)
-				tc := ToolCall{ID: tu.ToolUseID, Type: "function"}
-				tc.Function.Name = tu.Name
+				sendChunk(ev.text, 0)
+			case assistantKindReasoning:
+				if ev.text == "" || !thinking {
+					return nil
+				}
+				if firstTokenAt.IsZero() {
+					firstTokenAt = time.Now()
+				}
+				rawReasoningBuilder.WriteString(ev.text)
+				if !thinkingStarted {
+					sendChunk(ev.text, 1)
+					thinkingStarted = true
+					eventThinkingOpen = true
+				} else {
+					sendChunk(ev.text, 2)
+				}
+			case assistantKindToolCall:
+				if eventThinkingOpen {
+					sendChunk("", 3)
+					eventThinkingOpen = false
+					thinkingStarted = false
+				}
+				responseStarted = true
+				if firstTokenAt.IsZero() {
+					firstTokenAt = time.Now()
+				}
+				idx := toolCallIndex
+				toolCallIndex++
+				writeOpenAIToolCallChunk(sse, chatID, model, idx, ev.tool)
+				args, _ := json.Marshal(ev.tool.Input)
+				tc := ToolCall{ID: ev.tool.ID, Type: "function"}
+				tc.Function.Name = ev.tool.Name
 				tc.Function.Arguments = string(args)
 				toolCalls = append(toolCalls, tc)
-
-				chunk := map[string]interface{}{
-					"id":      chatID,
-					"object":  "chat.completion.chunk",
-					"created": time.Now().Unix(),
-					"model":   model,
-					"choices": []map[string]interface{}{{
-						"index": 0,
-						"delta": map[string]interface{}{
-							"tool_calls": []map[string]interface{}{{
-								"index": toolCallIndex,
-								"id":    tu.ToolUseID,
-								"type":  "function",
-								"function": map[string]string{
-									"name":      tu.Name,
-									"arguments": string(args),
-								},
-							}},
-						},
-						"finish_reason": nil,
-					}},
+			case assistantKindTelemetry:
+				if ev.hasCredits {
+					credits = ev.credits
 				}
-				toolCallIndex++
-				data, _ := json.Marshal(chunk)
-				sse.WriteData(string(data))
-				responseStarted = true
-			},
-			OnComplete: func(inTok, outTok int) {
-				inputTokens = inTok
-				outputTokens = outTok
-			},
-			OnCredits: func(c float64) {
-				credits = c
-			},
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
-		}
-
-		err := CallKiroAPI(ctx, account, payload, callback)
+				if ev.hasContext {
+					realInputTokens = int(ev.contextPct * float64(getContextWindowSize(model)) / 100.0)
+				}
+			case assistantKindCompletion:
+				inputTokens = ev.finalIn
+				outputTokens = ev.finalOut
+				if ev.finalCred > 0 {
+					credits = ev.finalCred
+				}
+			case assistantKindModelOutputError:
+				return ev.err
+			}
+			return nil
+		})
 		if err != nil {
-			// Before any semantic model output: fail over to another Account.
+			if IsModelOutputError(err) {
+				return attemptStop(err, false)
+			}
 			if !responseStarted {
 				return attemptRetry(err)
 			}
-			// Output already committed: we cannot change the HTTP status or fail
-			// over. Stop; the caller renders the SSE close after the slot is
-			// released (terminal frames must not hold the routing slot).
 			return attemptStop(err, true)
 		}
-
-		// Flush any remaining buffered model output while the slot is still held
-		// (this is model output, not a terminal control frame).
-		processText("", false, true)
 		if eventThinkingOpen {
 			sendChunk("", 3)
+			eventThinkingOpen = false
 		}
 		okAccount = account
 		return attemptSuccess()
@@ -470,6 +411,16 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	// Output already committed then the upstream failed: close the SSE stream
 	// cleanly now that the slot is released.
 	if outcome.stopReason == routeStopCallerTerminal {
+		if IsModelOutputError(outcome.lastErr) {
+			recordRequestMetrics("openai", model, true, outcome.lastAccount, apiKeyID, false, http.StatusBadGateway, "model_output_error", estimatedInputTokens, outputTokens, credits, requestStartedAt)
+			if responseStarted || sse.Committed() {
+				writeOpenAIStreamModelOutputError(sse, sanitizedModelOutputMessage(outcome.lastErr))
+				return
+			}
+			sse.Stop()
+			writeModelOutputErrorJSON(w, "openai")
+			return
+		}
 		h.recordFailure()
 		statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "api_error")
 		recordRequestMetrics("openai", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
@@ -571,23 +522,42 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		credits = 0
 		realInputTokens = 0
 
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if isThinking {
-					reasoningContent += text
-				} else {
-					content += text
-				}
-			},
-			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
+		tools, toolsErr := declaredToolsFromPayload(payload)
+		if toolsErr != nil {
+			return attemptStop(toolsErr, false)
 		}
-
-		if err := CallKiroAPI(ctx, account, payload, callback); err != nil {
+		err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+			switch ev.kind {
+			case assistantKindPlainText:
+				content += ev.text
+			case assistantKindReasoning:
+				if thinking {
+					reasoningContent += ev.text
+				}
+			case assistantKindToolCall:
+				toolUses = append(toolUses, kiroToolFromNormalized(ev.tool))
+			case assistantKindTelemetry:
+				if ev.hasCredits {
+					credits = ev.credits
+				}
+				if ev.hasContext {
+					realInputTokens = int(ev.contextPct * float64(getContextWindowSize(model)) / 100.0)
+				}
+			case assistantKindCompletion:
+				inputTokens = ev.finalIn
+				outputTokens = ev.finalOut
+				if ev.finalCred > 0 {
+					credits = ev.finalCred
+				}
+			case assistantKindModelOutputError:
+				return ev.err
+			}
+			return nil
+		})
+		if err != nil {
+			if IsModelOutputError(err) {
+				return attemptStop(err, false)
+			}
 			return attemptRetry(err)
 		}
 		okAccount = account
@@ -595,6 +565,11 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 	})
 
 	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+	if outcome.stopReason == routeStopCallerTerminal && IsModelOutputError(outcome.lastErr) {
+		recordRequestMetrics("openai", model, false, outcome.lastAccount, apiKeyID, false, http.StatusBadGateway, "model_output_error", estimatedInputTokens, 0, 0, requestStartedAt)
+		writeModelOutputErrorJSON(w, "openai")
 		return
 	}
 
