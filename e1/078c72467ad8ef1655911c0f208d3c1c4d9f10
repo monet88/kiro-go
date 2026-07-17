@@ -1,0 +1,30 @@
+proxy/json_repair_test.go
+  s_0ba809ab3976ee::t_2d2a884b7eb2be 1-71
+proxy/json_repair.go
+  s_0ba809ab3976ee::t_2633ebc63b92db 39-41
+  s_0ba809ab3976ee::t_2d2a884b7eb2be 1-38,42-169
+proxy/assistant_normalizer.go
+  s_0ba809ab3976ee::t_9aba82076e3d48 1-594
+proxy/assistant_normalizer_test.go
+  s_0ba809ab3976ee::t_881beb8e9d08fd 1-543
+proxy/tool_narration.go
+  s_0ba809ab3976ee::t_49fd390568dc10 1-74
+proxy/assistant_event.go
+  s_0ba809ab3976ee::t_49fd390568dc10 1-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "e1078c72467ad8ef1655911c0f208d3c1c4d9f10",
+  "prompts": {},
+  "sessions": {
+    "s_0ba809ab3976ee": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03132620-7350-4f50-a081-6a0fe3911b19",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
