@@ -1,0 +1,31 @@
+proxy/handler_test.go
+  s_0ba809ab3976ee::t_ef0a06a6b7e7ab 34-36
+proxy/assistant_wire_test.go
+  s_0ba809ab3976ee::t_845c11f9c66e66 1-328
+CONTEXT.md
+  s_85e9f97556af08::t_b67de88ae0fcdc 50-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4977b2182cefb02a731123002c493398f1a0bd0f",
+  "prompts": {},
+  "sessions": {
+    "s_0ba809ab3976ee": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03132620-7350-4f50-a081-6a0fe3911b19",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    },
+    "s_85e9f97556af08": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "3bf24865-9126-407b-9e35-53d65c42a524",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
