@@ -1,80 +1,13 @@
 package proxy
 
 import (
-	"context"
 	"encoding/json"
-	"io"
-	"kiro-go/logger"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
-// parseEventStream decodes an AWS binary Event Stream response body into the
-// production Kiro Semantic Extractor, then renders events through the
-// compatibility callback adapter. There is one decoder/extractor path.
-func parseEventStream(ctx context.Context, body io.Reader, callback *KiroStreamCallback) error {
-	adapter := newKiroCallbackAdapter(callback)
-	extractor := newKiroSemanticExtractor()
-	var contentEventCount int
-
-	for {
-		// Stop promptly if the client disconnected or the request was cancelled,
-		// so we don't keep reading from / writing to a dead connection.
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-		}
-
-		// Prelude: 12 bytes (total_len + headers_len + crc)
-		prelude := make([]byte, 12)
-		preludeN, err := io.ReadFull(body, prelude)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			logger.Warnf("[EventStream] Prelude read failed at byte %d after %d content events: %v", preludeN, contentEventCount, err)
-			return err
-		}
-		contentEventCount++
-
-		totalLength := int(prelude[0])<<24 | int(prelude[1])<<16 | int(prelude[2])<<8 | int(prelude[3])
-		headersLength := int(prelude[4])<<24 | int(prelude[5])<<16 | int(prelude[6])<<8 | int(prelude[7])
-
-		if totalLength < 16 {
-			continue
-		}
-
-		// Read the remaining message bytes.
-		remaining := totalLength - 12
-		msgBuf := make([]byte, remaining)
-		_, err = io.ReadFull(body, msgBuf)
-		if err != nil {
-			logger.Warnf("[EventStream] Message body read failed at event %d (totalLen=%d headersLen=%d): %v", contentEventCount, totalLength, headersLength, err)
-			return err
-		}
-
-		if headersLength > len(msgBuf)-4 {
-			continue
-		}
-
-		eventType := extractEventType(msgBuf[0:headersLength])
-		payloadBytes := msgBuf[headersLength : len(msgBuf)-4]
-		for _, ev := range extractor.ingestJSONPayload(eventType, payloadBytes) {
-			adapter.handle(ev)
-		}
-	}
-
-	for _, ev := range extractor.finish() {
-		adapter.handle(ev)
-	}
-	return nil
-}
+// parseEventStream lives in kiro_stream_consume.go (single decoder path).
 
 func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, currentOutputTokens int) (int, int) {
 	candidates := []map[string]interface{}{event}
@@ -267,81 +200,6 @@ func readTokenNumber(m map[string]interface{}, keys ...string) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-type toolUseState struct {
-	ToolUseID   string
-	Name        string
-	InputBuffer strings.Builder
-	GeneratedID bool
-}
-
-func handleToolUseEvent(event map[string]interface{}, current *toolUseState, callback *KiroStreamCallback) *toolUseState {
-	toolUseID := firstStringField(event, "toolUseId", "toolUseID", "tool_use_id", "id")
-	name := firstStringField(event, "name", "toolName", "tool_name")
-	isStop := firstBoolField(event, "stop", "isStop", "done")
-
-	if toolUseID != "" && name != "" {
-		if current == nil {
-			current = &toolUseState{ToolUseID: toolUseID, Name: name}
-		} else if current.ToolUseID != toolUseID {
-			if current.GeneratedID && current.Name == name {
-				current.ToolUseID = toolUseID
-				current.GeneratedID = false
-			} else {
-				finishToolUse(current, callback)
-				current = &toolUseState{ToolUseID: toolUseID, Name: name}
-			}
-		}
-	} else if name != "" && current == nil {
-		current = &toolUseState{ToolUseID: "toolu_" + uuid.New().String(), Name: name, GeneratedID: true}
-	} else if name != "" && current != nil && current.Name != name {
-		finishToolUse(current, callback)
-		current = &toolUseState{ToolUseID: "toolu_" + uuid.New().String(), Name: name, GeneratedID: true}
-	}
-
-	if current != nil {
-		if input, ok := event["input"].(string); ok {
-			current.InputBuffer.WriteString(input)
-		} else if inputObj, ok := event["input"].(map[string]interface{}); ok {
-			data, _ := json.Marshal(inputObj)
-			current.InputBuffer.Reset()
-			current.InputBuffer.Write(data)
-		}
-	}
-
-	if isStop && current != nil {
-		finishToolUse(current, callback)
-		return nil
-	}
-
-	return current
-}
-
-func finishToolUse(state *toolUseState, callback *KiroStreamCallback) {
-	if state == nil || state.Name == "" || callback == nil || callback.OnToolUse == nil {
-		return
-	}
-	if state.ToolUseID == "" {
-		state.ToolUseID = "toolu_" + uuid.New().String()
-	}
-	var input map[string]interface{}
-	if state.InputBuffer.Len() > 0 {
-		if err := json.Unmarshal([]byte(state.InputBuffer.String()), &input); err != nil {
-			// The upstream sent a tool-input buffer we cannot parse as JSON.
-			// Don't silently drop the arguments to an empty object: log it so
-			// the malformed payload is visible when diagnosing tool calls.
-			logger.Warnf("[KiroAPI] tool %q input JSON parse failed (%d bytes): %v", state.Name, state.InputBuffer.Len(), err)
-		}
-	}
-	if input == nil {
-		input = make(map[string]interface{})
-	}
-	callback.OnToolUse(KiroToolUse{
-		ToolUseID: state.ToolUseID,
-		Name:      state.Name,
-		Input:     input,
-	})
 }
 
 func firstStringField(m map[string]interface{}, keys ...string) string {

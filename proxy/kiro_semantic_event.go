@@ -20,6 +20,30 @@ const (
 	kiroKindTerminal
 )
 
+// toolInputMode distinguishes appending a streamed input fragment from
+// replacing the buffered input wholesale (object-shaped input arrives complete).
+type toolInputMode int
+
+const (
+	toolInputAppend toolInputMode = iota
+	toolInputReplace
+)
+
+// kiroErrorClass tags a semantic stream error by fault domain so downstream
+// normalization can decide routing: an upstream/service fault is retryable and
+// may trigger Account failover, while a model-output fault is caller-terminal
+// and non-penalizing (per ADR-0003).
+type kiroErrorClass int
+
+const (
+	// kiroErrorUpstream is a transport/service fault surfaced mid-stream by the
+	// upstream (exception frames, invalid-state events). Callers may retry/failover.
+	kiroErrorUpstream kiroErrorClass = iota
+	// kiroErrorModelOutput is a defect in the model's own output that cannot be
+	// recovered. Callers must not penalize the Account or fail over.
+	kiroErrorModelOutput
+)
+
 // kiroSemanticEvent is one unit of normalized Kiro stream meaning.
 // Constructors enforce kind/payload invariants; zero values are invalid.
 type kiroSemanticEvent struct {
@@ -31,8 +55,8 @@ type kiroSemanticEvent struct {
 	// structured tool kinds
 	toolID    string
 	toolName  string
-	toolInput string // raw fragment or full replacement JSON
-	replace   bool   // when true, toolInput replaces the buffer (object-shaped input)
+	toolInput string        // raw fragment or full replacement JSON
+	inputMode toolInputMode // toolInputReplace when toolInput replaces the buffer (object-shaped input)
 
 	// telemetry
 	inputTokens  int
@@ -43,6 +67,7 @@ type kiroSemanticEvent struct {
 	// stop / error / terminal
 	stopReason string
 	err        error
+	errClass   kiroErrorClass
 }
 
 func newPlainTextDelta(text string) (kiroSemanticEvent, error) {
@@ -69,7 +94,7 @@ func newToolStart(toolID, name string) (kiroSemanticEvent, error) {
 	return kiroSemanticEvent{kind: kiroKindToolStart, toolID: toolID, toolName: name}, nil
 }
 
-func newToolInput(toolID, name, input string, replace bool) (kiroSemanticEvent, error) {
+func newToolInput(toolID, name, input string, mode toolInputMode) (kiroSemanticEvent, error) {
 	if name == "" {
 		return kiroSemanticEvent{}, fmt.Errorf("tool input requires name")
 	}
@@ -84,7 +109,7 @@ func newToolInput(toolID, name, input string, replace bool) (kiroSemanticEvent, 
 		toolID:    toolID,
 		toolName:  name,
 		toolInput: input,
-		replace:   replace,
+		inputMode: mode,
 	}, nil
 }
 
@@ -98,12 +123,15 @@ func newToolStop(toolID, name string) (kiroSemanticEvent, error) {
 	return kiroSemanticEvent{kind: kiroKindToolStop, toolID: toolID, toolName: name}, nil
 }
 
-func newUsageSnapshot(inputTokens, outputTokens int) kiroSemanticEvent {
+func newUsageSnapshot(inputTokens, outputTokens int) (kiroSemanticEvent, error) {
+	if inputTokens < 0 || outputTokens < 0 {
+		return kiroSemanticEvent{}, fmt.Errorf("usage snapshot requires non-negative token counts")
+	}
 	return kiroSemanticEvent{
 		kind:         kiroKindUsage,
 		inputTokens:  inputTokens,
 		outputTokens: outputTokens,
-	}
+	}, nil
 }
 
 func newCreditDelta(credits float64) (kiroSemanticEvent, error) {
@@ -113,19 +141,31 @@ func newCreditDelta(credits float64) (kiroSemanticEvent, error) {
 	return kiroSemanticEvent{kind: kiroKindCredit, credits: credits}, nil
 }
 
-func newContextUsageSnapshot(pct float64) kiroSemanticEvent {
-	return kiroSemanticEvent{kind: kiroKindContextUsage, contextPct: pct}
+func newContextUsageSnapshot(pct float64) (kiroSemanticEvent, error) {
+	if pct < 0 || pct > 100 {
+		return kiroSemanticEvent{}, fmt.Errorf("context usage percentage %g outside [0,100]", pct)
+	}
+	return kiroSemanticEvent{kind: kiroKindContextUsage, contextPct: pct}, nil
 }
 
-func newStopMetadata(reason string) kiroSemanticEvent {
-	return kiroSemanticEvent{kind: kiroKindStopMeta, stopReason: reason}
+func newStopMetadata(reason string) (kiroSemanticEvent, error) {
+	if reason == "" {
+		return kiroSemanticEvent{}, fmt.Errorf("stop metadata requires a non-empty reason")
+	}
+	return kiroSemanticEvent{kind: kiroKindStopMeta, stopReason: reason}, nil
 }
 
-func newStreamError(err error) (kiroSemanticEvent, error) {
+// newStreamError builds a typed semantic error. The class distinguishes an
+// upstream/service fault (retryable, may trigger Account failover) from a
+// model-output fault (caller-terminal, non-penalizing) per ADR-0003.
+func newStreamError(class kiroErrorClass, err error) (kiroSemanticEvent, error) {
 	if err == nil {
 		return kiroSemanticEvent{}, fmt.Errorf("stream error requires non-nil error")
 	}
-	return kiroSemanticEvent{kind: kiroKindError, err: err}, nil
+	if class != kiroErrorUpstream && class != kiroErrorModelOutput {
+		return kiroSemanticEvent{}, fmt.Errorf("stream error requires a valid class")
+	}
+	return kiroSemanticEvent{kind: kiroKindError, err: err, errClass: class}, nil
 }
 
 func newTerminalBoundary() kiroSemanticEvent {

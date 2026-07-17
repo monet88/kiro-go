@@ -47,6 +47,26 @@ Periodic SSE comment frames sent while an upstream stream is idle so intermediar
 **Tool Compression**:
 Shrinking oversized tool definitions before the upstream Kiro request to avoid hard request rejection. Default threshold follows ngh1105 (20KB), overridable via `KIRO_TOOLS_COMPRESS_THRESHOLD_BYTES`.
 
+**Declared Tool**:
+A tool the client makes available for the current request, including its canonical name and input schema.
+_Avoid_: available tool, registered tool, upstream tool
+
+**Embedded Tool Narration**:
+An assistant-text line in the form `[Called <name> with args: {...}]` that may describe a tool invocation but is not itself a structured invocation.
+_Avoid_: embedded tool call, text tool call
+
+**Structured Tool Event**:
+An upstream stream event that explicitly carries tool identity, input, or lifecycle state.
+_Avoid_: tool narration, tool text
+
+**Normalized Tool Call**:
+The single client-visible tool invocation produced after name restoration, input normalization, schema validation, and duplicate reconciliation.
+_Avoid_: recovered tool, raw tool use
+
+**Rejected Tool Attempt**:
+A Structured Tool Event that expresses an invocation but cannot become a Normalized Tool Call because its input cannot be repaired or validated against the Declared Tool.
+_Avoid_: empty tool call, dropped tool
+
 **Wave A stream package** (clients: Claude Code CLI + OpenAI Codex):
 - Stream Keepalive on Claude Messages, OpenAI chat completions, and Responses SSE paths
 - Tool Compression before upstream send

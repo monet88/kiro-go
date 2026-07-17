@@ -108,65 +108,6 @@ func TestParseEventStreamNilCallbackFieldsAreNoOp(t *testing.T) {
 	}
 }
 
-func TestHandleToolUseEventGeneratesMissingToolUseID(t *testing.T) {
-	var toolUses []KiroToolUse
-	current := handleToolUseEvent(map[string]interface{}{
-		"name":  "mcpIdaProMcpStatus",
-		"input": `{"server":"ida-pro-mcp"}`,
-		"stop":  true,
-	}, nil, &KiroStreamCallback{
-		OnToolUse: func(toolUse KiroToolUse) {
-			toolUses = append(toolUses, toolUse)
-		},
-	})
-
-	if current != nil {
-		t.Fatalf("expected stopped tool use to clear current state")
-	}
-	if len(toolUses) != 1 {
-		t.Fatalf("expected one tool use, got %d", len(toolUses))
-	}
-	if toolUses[0].ToolUseID == "" {
-		t.Fatalf("expected generated tool use id")
-	}
-	if toolUses[0].Name != "mcpIdaProMcpStatus" {
-		t.Fatalf("unexpected tool name: %q", toolUses[0].Name)
-	}
-}
-
-func TestHandleToolUseEventReplacesGeneratedIDWhenRealIDArrives(t *testing.T) {
-	var toolUses []KiroToolUse
-	callback := &KiroStreamCallback{
-		OnToolUse: func(toolUse KiroToolUse) {
-			toolUses = append(toolUses, toolUse)
-		},
-	}
-
-	current := handleToolUseEvent(map[string]interface{}{
-		"name":  "mcpIdaProMcpStatus",
-		"input": `{"server":`,
-	}, nil, callback)
-	current = handleToolUseEvent(map[string]interface{}{
-		"toolUseId": "toolu_real",
-		"name":      "mcpIdaProMcpStatus",
-		"input":     `"ida-pro-mcp"}`,
-		"stop":      true,
-	}, current, callback)
-
-	if current != nil {
-		t.Fatalf("expected stopped tool use to clear current state")
-	}
-	if len(toolUses) != 1 {
-		t.Fatalf("expected one completed tool use, got %d", len(toolUses))
-	}
-	if toolUses[0].ToolUseID != "toolu_real" {
-		t.Fatalf("expected real tool id to replace generated id, got %q", toolUses[0].ToolUseID)
-	}
-	if got := toolUses[0].Input["server"]; got != "ida-pro-mcp" {
-		t.Fatalf("expected joined tool input, got %#v", toolUses[0].Input)
-	}
-}
-
 func TestBuildKiroTransportUsesExplicitProxyURL(t *testing.T) {
 	transport := buildKiroTransport("http://proxy.local:8080")
 	req := &http.Request{URL: mustParseURL(t, "https://q.us-east-1.amazonaws.com")}

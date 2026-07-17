@@ -116,6 +116,10 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
 	kiroPayload := OpenAIToKiro(openaiReq, thinking)
+	if _, err := declaredToolsFromPayload(kiroPayload); err != nil {
+		writeInvalidDeclaredTool(w, "responses", err)
+		return
+	}
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	respID := generateResponseID()
@@ -160,23 +164,42 @@ func (h *Handler) handleResponsesNonStream(
 		credits = 0
 		realInputTokens = 0
 
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if isThinking {
-					reasoningContent += text
-				} else {
-					content += text
-				}
-			},
-			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
+		tools, toolsErr := declaredToolsFromPayload(payload)
+		if toolsErr != nil {
+			return attemptStop(toolsErr, false)
 		}
-
-		if err := CallKiroAPI(ctx, account, payload, callback); err != nil {
+		err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+			switch ev.kind {
+			case assistantKindPlainText:
+				content += ev.text
+			case assistantKindReasoning:
+				if thinking {
+					reasoningContent += ev.text
+				}
+			case assistantKindToolCall:
+				toolUses = append(toolUses, kiroToolFromNormalized(ev.tool))
+			case assistantKindTelemetry:
+				if ev.hasCredits {
+					credits = ev.credits
+				}
+				if ev.hasContext {
+					realInputTokens = int(ev.contextPct * float64(getContextWindowSize(model)) / 100.0)
+				}
+			case assistantKindCompletion:
+				inputTokens = ev.finalIn
+				outputTokens = ev.finalOut
+				if ev.finalCred > 0 {
+					credits = ev.finalCred
+				}
+			case assistantKindModelOutputError:
+				return ev.err
+			}
+			return nil
+		})
+		if err != nil {
+			if IsModelOutputError(err) {
+				return attemptStop(err, false)
+			}
 			return attemptRetry(err)
 		}
 		okAccount = account
@@ -184,6 +207,11 @@ func (h *Handler) handleResponsesNonStream(
 	})
 
 	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+	if outcome.stopReason == routeStopCallerTerminal && IsModelOutputError(outcome.lastErr) {
+		recordRequestMetrics("responses", model, false, outcome.lastAccount, apiKeyID, false, http.StatusBadGateway, "model_output_error", estimatedInputTokens, 0, 0, requestStartedAt)
+		writeModelOutputErrorJSON(w, "responses")
 		return
 	}
 
@@ -381,8 +409,6 @@ func (h *Handler) handleResponsesStream(
 		currentItemType string
 		currentItemID   string
 		outputIndex     int
-		thinkingSource  thinkingStreamSource
-		dropTagThinking bool
 		responseStarted bool
 		okAccount       *config.Account
 	)
@@ -401,8 +427,6 @@ func (h *Handler) handleResponsesStream(
 		currentItemType = ""
 		currentItemID = ""
 		outputIndex = 0
-		thinkingSource = thinkingSourceUnknown
-		dropTagThinking = false
 		responseStarted = false
 
 		send("response.in_progress", map[string]interface{}{
@@ -563,64 +587,34 @@ func (h *Handler) handleResponsesStream(
 			responseStarted = true
 		}
 
-		// Splitter separates plain assistant text from inline <thinking> blocks
-		// so a literal tag never opens a phantom reasoning item, and real
-		// reasoning is routed into a reasoning output item instead of leaking
-		// raw <thinking> markers into output_text deltas (the previous bug).
-		splitter := &thinkingSplitter{
-			onPlain: func(t string) { emitText(t) },
-			onOpen:  func() { dropTagThinking = !allowTagSource(&thinkingSource) },
-			onThinking: func(t string) {
-				if dropTagThinking {
-					return
-				}
-				emitReasoning(t)
-			},
-			onClose: func() {
-				wasDrop := dropTagThinking
-				dropTagThinking = false
-				if wasDrop {
-					return
-				}
-				if currentItemType == "reasoning" {
-					closeItem()
-				}
-			},
+		tools, toolsErr := declaredToolsFromPayload(payload)
+		if toolsErr != nil {
+			return attemptStop(toolsErr, false)
 		}
-
-		processText := func(text string, isThinking bool, forceFlush bool) {
-			if isThinking {
-				if !thinking {
-					return
-				}
-				if !allowReasoningSource(&thinkingSource) {
-					return
-				}
-				emitReasoning(text)
-				return
-			}
-			splitter.push(text)
-			if forceFlush {
-				splitter.flush()
-			}
-		}
-
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if text == "" {
-					return
+		err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+			switch ev.kind {
+			case assistantKindPlainText:
+				if ev.text == "" {
+					return nil
 				}
 				if firstTokenAt.IsZero() {
 					firstTokenAt = time.Now()
 				}
-				processText(text, isThinking, false)
-			},
-			OnToolUse: func(tu KiroToolUse) {
-				// Flush buffered tagged text and close any open reasoning/message
-				// item before the function_call item opens.
-				processText("", false, true)
+				// Normalizer already separated tags; do not re-run thinkingSplitter.
+				emitText(ev.text)
+			case assistantKindReasoning:
+				if ev.text == "" {
+					return nil
+				}
+				if firstTokenAt.IsZero() {
+					firstTokenAt = time.Now()
+				}
+				emitReasoning(ev.text)
+			case assistantKindToolCall:
+				// Close any open reasoning/message item before function_call.
 				closeItem()
 
+				tu := kiroToolFromNormalized(ev.tool)
 				toolUses = append(toolUses, tu)
 				args, _ := json.Marshal(tu.Input)
 				fcID := generateOutputItemID("fc")
@@ -656,30 +650,36 @@ func (h *Handler) handleResponsesStream(
 				})
 				outputIndex++
 				responseStarted = true
-			},
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
-		}
-
-		err := CallKiroAPI(ctx, account, payload, callback)
+			case assistantKindTelemetry:
+				if ev.hasCredits {
+					credits = ev.credits
+				}
+				if ev.hasContext {
+					realInputTokens = int(ev.contextPct * float64(getContextWindowSize(model)) / 100.0)
+				}
+			case assistantKindCompletion:
+				inputTokens = ev.finalIn
+				outputTokens = ev.finalOut
+				if ev.finalCred > 0 {
+					credits = ev.finalCred
+				}
+			case assistantKindModelOutputError:
+				return ev.err
+			}
+			return nil
+		})
 		if err != nil {
-			// Before any semantic model output: fail over to another Account.
-			// The response.created/in_progress preamble is not model output, so
-			// its emission alone does not block failover.
+			if IsModelOutputError(err) {
+				return attemptStop(err, false)
+			}
 			if !responseStarted {
 				return attemptRetry(err)
 			}
-			// Semantic output already committed: cannot fail over. Stop; the
-			// caller closes the SSE stream after the slot is released.
 			return attemptStop(err, true)
 		}
 
-		// Flush buffered model output and close the open item while the slot is
-		// still held (model output, not a terminal control frame).
-		processText("", false, true)
+		// Close the open item while the slot is still held (model output, not a
+		// terminal control frame). Tag splitting already happened in the normalizer.
 		closeItem()
 		finalContent = msgText.String()
 		okAccount = account
@@ -737,6 +737,16 @@ func (h *Handler) handleResponsesStream(
 	// Semantic output already committed then upstream failed: emit response.failed
 	// + [DONE] now that the slot is released.
 	if outcome.stopReason == routeStopCallerTerminal {
+		if IsModelOutputError(outcome.lastErr) {
+			recordRequestMetrics("responses", model, true, outcome.lastAccount, apiKeyID, false, http.StatusBadGateway, "model_output_error", estimatedInputTokens, outputTokens, credits, requestStartedAt)
+			if responseStarted || sse.Committed() {
+				writeResponsesStreamFailed(sse, respID, model, sanitizedModelOutputMessage(outcome.lastErr))
+				return
+			}
+			sse.Stop()
+			writeModelOutputErrorJSON(w, "responses")
+			return
+		}
 		h.recordFailure()
 		statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "server_error")
 		recordRequestMetrics("responses", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)

@@ -211,6 +211,10 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 
 	// 转换请求
 	kiroPayload := ClaudeToKiro(&req, thinking)
+	if _, err := declaredToolsFromPayload(kiroPayload); err != nil {
+		writeInvalidDeclaredTool(w, "claude", err)
+		return
+	}
 
 	// Stream or non-stream
 	apiKeyID := apiKeyIDFromContext(r.Context())
@@ -351,8 +355,6 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			activeBlockType = blockType
 		}
 
-		var dropTagThinking bool
-		var thinkingSource thinkingStreamSource
 		var thinkingStarted bool
 		var eventThinkingOpen bool
 
@@ -438,153 +440,111 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 			}
 		}
 
-		splitter := &thinkingSplitter{
-			onPlain: func(t string) { sendText(t, 0) },
-			onOpen: func() {
-				dropTagThinking = !allowTagSource(&thinkingSource)
-				thinkingStarted = false
-			},
-			onThinking: func(t string) {
-				if dropTagThinking {
-					return
-				}
-				if !thinkingStarted {
-					sendText(t, 1)
-					thinkingStarted = true
-				} else {
-					sendText(t, 2)
-				}
-			},
-			onClose: func() {
-				wasDrop := dropTagThinking
-				dropTagThinking = false
-				if wasDrop {
-					return
-				}
-				if !thinkingStarted {
-					sendText("", 1)
-				}
-				sendText("", 3)
-				thinkingStarted = false
-			},
+		tools, toolsErr := declaredToolsFromPayload(payload)
+		if toolsErr != nil {
+			// Should have been rejected pre-upstream; treat as caller-terminal non-penalizing.
+			return attemptStop(toolsErr, false)
 		}
 
-		processClaudeText := func(text string, isThinking bool, forceFlush bool) {
-			if isThinking && !thinking {
-				return
-			}
-
-			if isThinking {
-				if !allowReasoningSource(&thinkingSource) {
-					return
-				}
-				if !thinkingStarted {
-					sendText(text, 1)
-					thinkingStarted = true
-					eventThinkingOpen = true
-				} else {
-					sendText(text, 2)
-				}
-				return
-			}
-
-			if eventThinkingOpen {
-				sendText("", 3)
-				eventThinkingOpen = false
-				thinkingStarted = false
-			}
-
-			splitter.push(text)
-			if forceFlush {
-				splitter.flush()
-			}
-		}
-
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if text == "" {
-					return
+		var streamStopReason string
+		var sawValidatedTool bool
+		err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+			switch ev.kind {
+			case assistantKindPlainText:
+				if ev.text == "" {
+					return nil
 				}
 				if firstTokenAt.IsZero() {
 					firstTokenAt = time.Now()
 				}
-				if isThinking {
-					rawThinkingBuilder.WriteString(text)
-				} else {
-					rawContentBuilder.WriteString(text)
+				rawContentBuilder.WriteString(ev.text)
+				// Normalizer already separated tags; do not re-run thinkingSplitter.
+				if eventThinkingOpen {
+					sendText("", 3)
+					eventThinkingOpen = false
+					thinkingStarted = false
 				}
-				processClaudeText(text, isThinking, false)
-			},
-			OnToolUse: func(tu KiroToolUse) {
-				processClaudeText("", false, true)
-				rawContentBuilder.WriteString(tu.Name)
-				if b, err := json.Marshal(tu.Input); err == nil {
+				sendText(ev.text, 0)
+			case assistantKindReasoning:
+				if ev.text == "" {
+					return nil
+				}
+				if firstTokenAt.IsZero() {
+					firstTokenAt = time.Now()
+				}
+				rawThinkingBuilder.WriteString(ev.text)
+				if thinking {
+					if !thinkingStarted {
+						sendText(ev.text, 1)
+						thinkingStarted = true
+						eventThinkingOpen = true
+					} else {
+						sendText(ev.text, 2)
+					}
+				}
+			case assistantKindToolCall:
+				if eventThinkingOpen {
+					sendText("", 3)
+					eventThinkingOpen = false
+					thinkingStarted = false
+				}
+				rawContentBuilder.WriteString(ev.tool.Name)
+				if b, mErr := json.Marshal(ev.tool.Input); mErr == nil {
 					rawContentBuilder.Write(b)
 				}
-
+				tu := kiroToolFromNormalized(ev.tool)
 				toolUses = append(toolUses, tu)
+				sawValidatedTool = true
 				ensureMessageStart()
 				closeActiveBlock()
-
 				idx := nextContentIndex
 				nextContentIndex++
-
-				sse.WriteEvent("content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tu.ToolUseID,
-						"name":  tu.Name,
-						"input": map[string]interface{}{},
-					},
-				})
-
-				inputJSON, _ := json.Marshal(tu.Input)
-				sse.WriteEvent("content_block_delta", map[string]interface{}{
-					"type":  "content_block_delta",
-					"index": idx,
-					"delta": map[string]interface{}{
-						"type":         "input_json_delta",
-						"partial_json": string(inputJSON),
-					},
-				})
-
-				sse.WriteEvent("content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": idx,
-				})
-			},
-			OnComplete: func(inTok, outTok int) {
-				inputTokens = inTok
-				outputTokens = outTok
-			},
-			OnCredits: func(c float64) {
-				credits = c
-			},
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
-		}
-
-		err := CallKiroAPI(ctx, account, payload, callback)
+				writeClaudeToolBlock(sse, idx, ev.tool)
+			case assistantKindTelemetry:
+				if ev.hasCredits {
+					credits = ev.credits
+				}
+				if ev.hasContext {
+					realInputTokens = int(ev.contextPct * float64(getContextWindowSize(model)) / 100.0)
+				}
+			case assistantKindCompletion:
+				inputTokens = ev.finalIn
+				outputTokens = ev.finalOut
+				if ev.finalCred > 0 {
+					credits = ev.finalCred
+				}
+				streamStopReason = ev.stopReason
+				_ = sawValidatedTool
+			case assistantKindModelOutputError:
+				return ev.err
+			}
+			return nil
+		})
 		if err != nil {
-			// Before any semantic model output (message not yet started): fail
-			// over to another Account.
+			if IsModelOutputError(err) {
+				if !messageStarted {
+					// Pre-commit: caller will render sanitized 502; no Account penalty/failover.
+					return attemptStop(err, false)
+				}
+				// Post-commit: terminal, non-penalizing.
+				return attemptStop(err, false)
+			}
 			if !messageStarted {
 				return attemptRetry(err)
 			}
-			// Output already committed: cannot change status or fail over. Stop;
-			// the caller closes the SSE stream after the slot is released.
 			return attemptStop(err, true)
 		}
 
-		// Flush remaining buffered model output while the slot is still held.
-		processClaudeText("", false, true)
+		// Close any open thinking block while the slot is still held.
 		if eventThinkingOpen {
 			sendText("", 3)
+			eventThinkingOpen = false
 		}
 		closeActiveBlock()
+		if streamStopReason != "" {
+			// Prefer normalizer stop reason when available; success path still derives from tools.
+			_ = streamStopReason
+		}
 		okAccount = account
 		return attemptSuccess()
 	})
@@ -643,6 +603,17 @@ func (h *Handler) handleClaudeStream(ctx context.Context, w http.ResponseWriter,
 	// Output already committed then upstream failed: close the SSE stream cleanly
 	// now that the slot is released.
 	if outcome.stopReason == routeStopCallerTerminal {
+		if IsModelOutputError(outcome.lastErr) {
+			// Model output defects are not Account failures.
+			recordRequestMetrics("claude", model, true, outcome.lastAccount, apiKeyID, false, http.StatusBadGateway, "model_output_error", estimatedInputTokens, outputTokens, credits, requestStartedAt)
+			if messageStarted || sse.Committed() {
+				writeClaudeStreamModelOutputError(sse, sanitizedModelOutputMessage(outcome.lastErr))
+				return
+			}
+			sse.Stop()
+			writeModelOutputErrorJSON(w, "claude")
+			return
+		}
 		h.recordFailure()
 		statusCode, errType := metricsErrorDetails(outcome.lastErr, http.StatusInternalServerError, "api_error")
 		recordRequestMetrics("claude", model, true, outcome.lastAccount, apiKeyID, false, statusCode, errType, estimatedInputTokens, outputTokens, credits, requestStartedAt)
@@ -734,30 +705,42 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 
 		cacheUsage = h.promptCache.Compute(account.ID, cacheProfile)
 
-		callback := &KiroStreamCallback{
-			OnText: func(text string, isThinking bool) {
-				if isThinking {
-					thinkingContent += text
-				} else {
-					content += text
-				}
-			},
-			OnToolUse: func(tu KiroToolUse) {
-				toolUses = append(toolUses, tu)
-			},
-			OnComplete: func(inTok, outTok int) {
-				inputTokens = inTok
-				outputTokens = outTok
-			},
-			OnCredits: func(c float64) {
-				credits = c
-			},
-			OnContextUsage: func(pct float64) {
-				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
-			},
+		tools, toolsErr := declaredToolsFromPayload(payload)
+		if toolsErr != nil {
+			return attemptStop(toolsErr, false)
 		}
-
-		if err := CallKiroAPI(ctx, account, payload, callback); err != nil {
+		err := streamAssistantFromKiro(ctx, account, payload, tools, func(ev assistantEvent) error {
+			switch ev.kind {
+			case assistantKindPlainText:
+				content += ev.text
+			case assistantKindReasoning:
+				if thinking {
+					thinkingContent += ev.text
+				}
+			case assistantKindToolCall:
+				toolUses = append(toolUses, kiroToolFromNormalized(ev.tool))
+			case assistantKindTelemetry:
+				if ev.hasCredits {
+					credits = ev.credits
+				}
+				if ev.hasContext {
+					realInputTokens = int(ev.contextPct * float64(getContextWindowSize(model)) / 100.0)
+				}
+			case assistantKindCompletion:
+				inputTokens = ev.finalIn
+				outputTokens = ev.finalOut
+				if ev.finalCred > 0 {
+					credits = ev.finalCred
+				}
+			case assistantKindModelOutputError:
+				return ev.err
+			}
+			return nil
+		})
+		if err != nil {
+			if IsModelOutputError(err) {
+				return attemptStop(err, false)
+			}
 			return attemptRetry(err)
 		}
 		okAccount = account
@@ -765,6 +748,11 @@ func (h *Handler) handleClaudeNonStream(ctx context.Context, w http.ResponseWrit
 	})
 
 	if outcome.stopReason == routeStopCanceled {
+		return
+	}
+	if outcome.stopReason == routeStopCallerTerminal && IsModelOutputError(outcome.lastErr) {
+		recordRequestMetrics("claude", model, false, outcome.lastAccount, apiKeyID, false, http.StatusBadGateway, "model_output_error", estimatedInputTokens, 0, 0, requestStartedAt)
+		writeModelOutputErrorJSON(w, "claude")
 		return
 	}
 

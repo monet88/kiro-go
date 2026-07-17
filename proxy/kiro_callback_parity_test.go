@@ -34,7 +34,8 @@ func (t *callbackTrace) callback() *KiroStreamCallback {
 			t.Steps = append(t.Steps, fmt.Sprintf("%s:%s", kind, text))
 		},
 		OnToolUse: func(toolUse KiroToolUse) {
-			// Deep-copy input so later mutations cannot rewrite the trace.
+			// Snapshot the tool use with a fresh input map so later mutations
+			// cannot rewrite the recorded trace.
 			cp := KiroToolUse{
 				ToolUseID: toolUse.ToolUseID,
 				Name:      toolUse.Name,
@@ -122,17 +123,12 @@ func TestKiroCallbackParityFixtures(t *testing.T) {
 				))
 			},
 			want: want{
+				// Parity: duplicate snapshots emit nothing; each cumulative rewrite
+				// yields only the previously unseen suffix.
 				steps: []string{
 					"text:Hel",
 					"text:lo",
-					// duplicate ignored
-					// overlap from "Hello" -> "lo world" yields " world" via suffix overlap on "lo"
-					// Wait: normalizeChunk("lo world", prev="Hello"):
-					//  not equal, not prefix either way.
-					//  maxOverlap: suffix of prev matching prefix of chunk.
-					//  "Hello" suffixes vs "lo world" prefixes: "lo" matches -> overlap 2 -> " world"
 					"text: world",
-					// prev becomes "lo world"; next "lo world!" has prefix prev -> "!"
 					"text:!",
 					"complete:0:0",
 				},
@@ -282,6 +278,37 @@ func TestKiroCallbackParityFixtures(t *testing.T) {
 				inTok:   15,
 				outTok:  7,
 				done:    true,
+			},
+		},
+		{
+			name: "tool_use stop metadata stays a callback no-op",
+			body: func(t *testing.T) io.Reader {
+				return bytes.NewReader(joinFrames(
+					awsEventStreamFrame(t, "toolUseEvent", map[string]interface{}{
+						"toolUseId": "toolu_meta",
+						"name":      "lookup",
+						"input":     `{"q":"x"}`,
+						"stop":      true,
+					}),
+					awsEventStreamFrame(t, "metadataEvent", map[string]interface{}{
+						"stopReason": "TOOL_USE",
+					}),
+				))
+			},
+			want: want{
+				// The TOOL_USE stop-reason variant reaches the extractor as stop
+				// metadata but must not surface on the legacy callback: only the
+				// tool call and completion are visible.
+				steps: []string{
+					`tool:toolu_meta:lookup:{"q":"x"}`,
+					"complete:0:0",
+				},
+				tools: []wantTool{{
+					idExact:   "toolu_meta",
+					name:      "lookup",
+					inputJSON: `{"q":"x"}`,
+				}},
+				done: true,
 			},
 		},
 		{
