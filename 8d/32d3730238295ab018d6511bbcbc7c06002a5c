@@ -1,0 +1,22 @@
+docs/adr/0003-normalize-kiro-streams-before-protocol-rendering.md
+  s_85e9f97556af08::t_4e417fffc4dd98 1-19
+docs/superpowers/plans/2026-07-17-kiro-semantic-tool-normalization.md
+  s_85e9f97556af08::t_66d734343545f9 3-9
+  s_85e9f97556af08::t_4e417fffc4dd98 1-2,10-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "8d32d3730238295ab018d6511bbcbc7c06002a5c",
+  "prompts": {},
+  "sessions": {
+    "s_85e9f97556af08": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "3bf24865-9126-407b-9e35-53d65c42a524",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
