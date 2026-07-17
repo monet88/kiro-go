@@ -1,0 +1,29 @@
+proxy/handler_claude.go
+  s_0ba809ab3976ee::t_b5d98c5207b93d 214-217,443-446,449-455,457-458,460-470,475-483,485-492,495,497,502-522,524-531,538,541,544-547,606-616,708-718,720-743,753-757
+proxy/apikey_live_smoke_test.go
+  s_0ba809ab3976ee::t_ef0a06a6b7e7ab 72-75,78-84
+proxy/handler_openai.go
+  s_0ba809ab3976ee::t_b5d98c5207b93d 90-93,259-267,269-270,272-277,279-282,284-285,287,289,293,295-299,301,305-310,313-315,317-330,332-334,342,414-423,525-527,529-560,570-574
+proxy/admin_accounts.go
+  s_0ba809ab3976ee::t_cb69c138b73dd9 584-588,590-598
+proxy/kiro_callback_adapter.go
+  s_0ba809ab3976ee::t_d7862ad15623dc 12-13
+proxy/responses_handler.go
+  s_0ba809ab3976ee::t_b5d98c5207b93d 119-122,167-169,171-202,212-216,590-592,594-598,600-601,603-607,612-614,617,653-670,672-674,681-682,740-749
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "18426f787b3a30c28d7c64589a4762c5c2428619",
+  "prompts": {},
+  "sessions": {
+    "s_0ba809ab3976ee": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03132620-7350-4f50-a081-6a0fe3911b19",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
