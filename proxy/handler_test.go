@@ -31,6 +31,9 @@ func TestClaudeNonStreamRetriesNextAccountAfterPreResponseFailure(t *testing.T) 
 	if err := config.Init(cfgFile); err != nil {
 		t.Fatalf("config.Init: %v", err)
 	}
+	// Successful handlers kick UpdateStats which saves config from a background
+	// goroutine. On Windows that can keep TempDir open past test body.
+	t.Cleanup(func() { time.Sleep(150 * time.Millisecond) })
 
 	if err := config.AddAccount(config.Account{
 		ID:          "first",
