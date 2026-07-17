@@ -34,6 +34,9 @@ func setupWireHandler(t *testing.T, accountID string) *Handler {
 	if err := config.UpdateEndpointFallback(false); err != nil {
 		t.Fatalf("endpoint fallback: %v", err)
 	}
+	// Successful handlers kick UpdateStats which saves config from a background
+	// goroutine. On Windows that can keep TempDir open past test body.
+	t.Cleanup(func() { time.Sleep(150 * time.Millisecond) })
 	p := accountpool.GetPool()
 	p.Reload()
 	return &Handler{
