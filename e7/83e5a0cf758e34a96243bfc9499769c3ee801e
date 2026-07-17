@@ -1,0 +1,25 @@
+go.mod
+  s_0ba809ab3976ee::t_b45b8e77d8cdb8 6-10
+proxy/declared_tools.go
+  s_0ba809ab3976ee::t_d68f5fee7007d2 1-280
+proxy/declared_tools_test.go
+  s_0ba809ab3976ee::t_d68f5fee7007d2 1-153
+go.sum
+  s_0ba809ab3976ee::t_9dc341661e78a5 3-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "e783e5a0cf758e34a96243bfc9499769c3ee801e",
+  "prompts": {},
+  "sessions": {
+    "s_0ba809ab3976ee": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03132620-7350-4f50-a081-6a0fe3911b19",
+        "model": "gpt-4.1"
+      },
+      "human_author": "monet88 <minhthang421992@gmail.com>"
+    }
+  }
+}
